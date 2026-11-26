@@ -17,9 +17,10 @@ test('admin notifications: at most one per hour, the rest bundled; a daily remin
   db.addRequest(id('b', 'b@x.org'), 'B', '');
   await mail.requestReceived();
   assert.equal(sent.length, 1, 'a second request within the hour: no new email yet');
-  const hourLater = new Date(Date.now() + 3601_000);
-  hourLater.setHours(10, 0);
-  db.setMeta('notified_at', String(Math.floor(Date.now() / 1000) - 3601));
+  // A fixed time of day (10:00, before the reminder), with the last notification more than an hour before
+  const hourLater = new Date();
+  hourLater.setHours(10, 0, 0, 0);
+  db.setMeta('notified_at', String(Math.floor(hourLater.getTime() / 1000) - 3601));
   await mail.tick(hourLater);
   assert.equal(sent.length, 2, 'after the hour: one bundled email');
   const evening = new Date(hourLater); evening.setHours(16, 30);
