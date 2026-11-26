@@ -28,3 +28,8 @@ services:
     upstream: 127.0.0.1:8080
     access: members
     api_bypass: [/api/*]
+
+# Old addresses that moved (e.g. under lab.): a permanent redirect that keeps the path.
+# Their DNS must point to this server.
+# redirects:
+#   whisper.societal-analytics.nl: https://whisper.lab.societal-analytics.nl

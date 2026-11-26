@@ -26,12 +26,16 @@ export type Service = {
   show: boolean;
 };
 
+/** An old address that now redirects (permanently, keeping the path) to another site, e.g. after a move under lab. */
+export type Redirect = { from: string; to: string };
+
 export type Groups = {
   admin: string[];
   /** Fixed lab members, in addition to those approved in the portal */
   lab: string[];
 };
 
+const HOSTNAME = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/;
 const SUBDOMAIN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 const UPSTREAM = /^[a-zA-Z0-9.-]+:\d{1,5}$/;
 const PATH = /^\/[A-Za-z0-9._~\/-]*\*?$/;
@@ -44,6 +48,7 @@ function fail(file: string, message: string): never {
 
 export function parseServices(text: string, labDomain: string, file = 'services.yml'): Service[] {
   const doc = parse(text) ?? {};
+  for (const key of Object.keys(doc)) if (key !== 'services' && key !== 'redirects') fail(file, `unknown section "${key}" (only services and redirects)`);
   const entries = doc.services ?? {};
   if (typeof entries !== 'object' || Array.isArray(entries)) fail(file, '"services" must be a map of subdomain names');
   const services: Service[] = [];
@@ -82,6 +87,26 @@ export function parseServices(text: string, labDomain: string, file = 'services.
   return services;
 }
 
+/** The redirects section of services.yml: old address -> the origin it moved to (https://...). */
+export function parseRedirects(text: string, labDomain: string, services: Service[], file = 'services.yml'): Redirect[] {
+  const entries = (parse(text) ?? {}).redirects ?? {};
+  if (typeof entries !== 'object' || Array.isArray(entries)) fail(file, '"redirects" must be a map of old address: new address');
+  const taken = new Set([labDomain, ...services.map((s) => s.host)]);
+  return Object.entries<any>(entries).map(([from, to]) => {
+    if (!HOSTNAME.test(from)) fail(file, `redirects: "${from}" is not a host name, e.g. whisper.example.org`);
+    if (taken.has(from)) fail(file, `redirects: ${from} is already the portal or a service`);
+    let url: URL | undefined;
+    try {
+      url = new URL(String(to));
+    } catch {
+      // checked below
+    }
+    if (!url || url.protocol !== 'https:' || url.pathname !== '/' || url.search || url.hash || url.username || String(to).replace(/\/$/, '') !== url.origin)
+      fail(file, `redirects: ${from} must point to an address like https://whisper.${labDomain}`);
+    return { from, to: url.origin };
+  });
+}
+
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function parseGroups(text: string, file = 'groups.yml'): Groups {
@@ -103,6 +128,7 @@ export function parseGroups(text: string, file = 'groups.yml'): Groups {
 /** Reads both files, and reads them again when they change (checked at most every few seconds). */
 export class Settings {
   services: Service[] = [];
+  redirects: Redirect[] = [];
   groups: Groups = { admin: [], lab: [] };
   private stamp = '';
   private checkedAt = 0;
@@ -119,9 +145,12 @@ export class Settings {
   /** Throws on invalid files at startup; later, an invalid change is logged and the last good settings stay. */
   reload(strict = false) {
     try {
-      const services = parseServices(readFileSync(this.servicesFile, 'utf8'), this.labDomain, this.servicesFile);
+      const text = readFileSync(this.servicesFile, 'utf8');
+      const services = parseServices(text, this.labDomain, this.servicesFile);
+      const redirects = parseRedirects(text, this.labDomain, services, this.servicesFile);
       const groups = parseGroups(readFileSync(this.groupsFile, 'utf8'), this.groupsFile);
       this.services = services;
+      this.redirects = redirects;
       this.groups = groups;
       this.stamp = this.currentStamp();
       this.onChange?.();

@@ -80,6 +80,7 @@ On the lab server, as `sal`, in `/opt/lab-portal`:
 
 - **Add or change a service**: edit `config/services.yml`. The portal checks the file; when it is
   invalid it keeps the previous settings and logs why (`docker compose logs portal`).
+- **An old address that moved** (e.g. under `lab.`): add it under `redirects:` in `services.yml`.
 - **Admins and fixed members**: edit `config/groups.yml`.
 - **Members**: on `https://<LAB_DOMAIN>/admin` (approve requests, add or remove members).
 - **Update**: `git pull && docker compose up -d --build`.

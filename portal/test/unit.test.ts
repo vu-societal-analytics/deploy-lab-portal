@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decide, safeReturnUrl } from '../src/authz.ts';
-import { parseServices, parseGroups, type Service } from '../src/settings.ts';
+import { parseServices, parseGroups, parseRedirects, type Service } from '../src/settings.ts';
 import { renderCaddyfile } from '../src/caddy.ts';
 import { hasMfa } from '../src/oidc.ts';
 
@@ -96,4 +96,22 @@ test('daily database copy: consistent, without sessions, 7 kept', async () => {
   const copy = new DatabaseSync(`${dir}/backups/${files.at(-1)}`);
   assert.equal((copy.prepare('SELECT count(*) n FROM members').get() as { n: number }).n, 1);
   assert.equal((copy.prepare('SELECT count(*) n FROM sessions').get() as { n: number }).n, 0);
+});
+
+test('redirects: validated, rendered as permanent redirects', () => {
+  const yml = `services:\n  whisper:\n    upstream: 127.0.0.1:9000\nredirects:\n  whisper.example.org: https://whisper.${D}\n`;
+  const services = parseServices(yml, D);
+  const r = parseRedirects(yml, D, services);
+  assert.deepEqual(r, [{ from: 'whisper.example.org', to: `https://whisper.${D}` }]);
+  const f = renderCaddyfile(services, { labDomain: D, portalUpstream: '127.0.0.1:3000', acmeEmail: '' }, r);
+  assert.match(f, /whisper\.example\.org \{\n\tredir https:\/\/whisper\.lab\.example\.org\{uri\} permanent\n\}/);
+  for (const bad of [
+    `redirects:\n  whisper.${D}: https://x.org`, // a service's own address
+    `redirects:\n  ${D}: https://x.org`, // the portal
+    `redirects:\n  old.example.org: http://x.org`, // not https
+    `redirects:\n  old.example.org: https://x.org/path`, // not an origin
+    `redirects:\n  old.example.org: "https://x.org {\\n}"`, // injection
+    `redirects:\n  "old.example.org {": https://x.org`,
+  ]) assert.throws(() => parseRedirects(`services:\n  whisper:\n    upstream: 127.0.0.1:9000\n${bad}\n`, D, services), undefined, bad);
+  assert.throws(() => parseServices(`servics:\n  a: {}\n`, D), /unknown section/);
 });

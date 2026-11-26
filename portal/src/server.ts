@@ -16,7 +16,7 @@ if (cfg.insecureDisableEmailVerification) console.warn('WARNING: AUTH_INSECURE_D
 
 const settings = new Settings(cfg.servicesFile, cfg.groupsFile, cfg.labDomain);
 const caddy = () => {
-  if (writeCaddyfile(cfg.caddyFile, renderCaddyfile(settings.services, cfg))) console.log(`Caddyfile written: ${settings.services.length} service(s)`);
+  if (writeCaddyfile(cfg.caddyFile, renderCaddyfile(settings.services, cfg, settings.redirects))) console.log(`Caddyfile written: ${settings.services.length} service(s), ${settings.redirects.length} redirect(s)`);
 };
 caddy();
 settings.onChange = caddy;
