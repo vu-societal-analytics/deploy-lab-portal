@@ -47,7 +47,7 @@ export function loadConfig() {
     insecureDisableEmailVerification: flag('AUTH_INSECURE_DISABLE_EMAIL_VERIFICATION'),
     /** The portal's own sessions: signed out after this long without use, and at most this long in total
      *  (OWASP's idle and absolute timeouts, with NIST SP 800-63B's numbers for logins with a second factor).
-     *  Apps can have their own limits in services.yml. Signing out at the provider ends them too. */
+     *  Apps can have their own limits in services.yml. Independent of the provider's session. */
     sessionIdle: seconds('SESSION_IDLE', 30 * 60),
     sessionMax: seconds('SESSION_MAX', 12 * 3600),
     /** Where users manage their account and 2FA (the account console of the realm) */

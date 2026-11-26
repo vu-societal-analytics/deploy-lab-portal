@@ -79,9 +79,11 @@ Authentication standard prescribes):
 - **Per app:** an app can have its own limits in `services.yml` (`session_idle`, `session_max`), e.g.
   a notebook server that computes for hours while the user does nothing. The session then counts for
   that app under its limits; the portal and other apps keep the defaults. Any request counts as activity.
-- **Sign-out:** in the portal, which also signs out at Keycloak; or at Keycloak, which tells the portal
-  (back-channel logout). Removing a member takes effect at once. To lock someone out completely, also
-  sign them out (or disable them) in Keycloak.
+- **Sign-out:** in the portal, which also ends the Keycloak session (so the next sign-in, to any app,
+  asks for the password again). A sign-out in another app, or at Keycloak, doesn't end the portal's
+  session: apps don't depend on each other's sign-out.
+- **Locking someone out:** removing a member ends their portal sessions at once. In an emergency, also
+  disable them in Keycloak, so they can't sign in to any app again.
 
 ## Setup
 
@@ -91,8 +93,7 @@ On the lab server, in `/opt/lab-portal`, as the account that owns the apps (`sal
    - Client authentication **on** (confidential), Standard flow only, PKCE method **S256**
    - Valid redirect URI: `https://<LAB_DOMAIN>/callback`
    - Valid post logout redirect URI: `https://<LAB_DOMAIN>/signed-out`
-   - Front channel logout **off**; Backchannel logout URL: `https://<LAB_DOMAIN>/backchannel-logout`,
-     Backchannel logout session required **on**
+   - Front channel logout **off**
    - Copy the client secret (Credentials tab).
 
    The portal needs the claims `email`, `email_verified` and `amr` (with `mfa` after a second factor).
@@ -150,7 +151,7 @@ npm test            # unit tests: access rules, settings, Caddyfile, users and m
 **End-to-end test** (`test/e2e`): Keycloak with a minimal realm (`realm.json`: only what the
 Authentication standard asks of a provider, not our production realm), a mail catcher, the portal's
 Docker image and Caddy, and a browser that goes through login, requests, invitations, access per
-service, 2FA, sign-out, back-channel logout, the API bypass and settings reloads. Takes about 3 minutes;
+service, 2FA, sign-out, independence from the Keycloak session, the API bypass and settings reloads. Takes about 3 minutes;
 uses ports 80, 443, 1025, 3000, 8025 and 8080 on this machine (not on the server).
 
 ```bash
@@ -166,7 +167,7 @@ Files in `portal/src`:
 | `server.ts`   | start: settings, Caddyfile, database, OIDC, timers                       |
 | `app.tsx`     | the routes: login, callback, forward auth, sign-out, membership, admin   |
 | `authz.ts`    | the access decision per service, and safe return addresses               |
-| `oidc.ts`     | OIDC login (PKCE, state, nonce), sign-out, back-channel logout tokens    |
+| `oidc.ts`     | OIDC login (PKCE, state, nonce), sign-out                                |
 | `settings.ts` | reads and validates services.yml and admins.yml, reloads on change       |
 | `caddy.ts`    | the Caddyfile from services.yml                                          |
 | `db.ts`       | the SQLite database and its daily copy                                   |

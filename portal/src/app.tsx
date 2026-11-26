@@ -36,9 +36,9 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
   const portal = (path: string) => `${cfg.portalUrl}${path}`;
 
   const defaults = { idle: cfg.sessionIdle, max: cfg.sessionMax };
-  /** The signed-in person, or null. The portal keeps its own sessions: they end after SESSION_IDLE without use,
-   *  after SESSION_MAX, on sign-out, or when the provider reports a sign-out (back-channel logout). An app may
-   *  have its own limits (services.yml): then the session counts for that app under those limits. */
+  /** The signed-in person, or null. The portal keeps its own sessions, independent of the provider's: they end
+   *  after SESSION_IDLE without use, after SESSION_MAX, or on sign-out here. An app may have its own limits
+   *  (services.yml): then the session counts for that app under those limits. */
   function session(c: Context, limits: SessionLimits = defaults): SessionRow | null {
     const token = getCookie(c, SESSION_COOKIE);
     if (!token) return null;
@@ -166,7 +166,7 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
     const token = randomBytes(32).toString('base64url');
     const t = now();
     db.insertSession({
-      id: hash(token), ...id, sid: result.sid, email: result.email, email_verified: result.emailVerified ? 1 : 0,
+      id: hash(token), ...id, email: result.email, email_verified: result.emailVerified ? 1 : 0,
       has_mfa: result.hasMfa ? 1 : 0, auth_at: result.authAt, id_token: result.idToken, created_at: t, last_seen: t,
     });
     setCookie(c, SESSION_COOKIE, token, { domain: cfg.labDomain, path: '/', httpOnly: true, secure: true, sameSite: 'Lax', maxAge: settings.longestSession(defaults).max });
@@ -186,20 +186,6 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
   app.get('/signed-out', (c) =>
     c.html(<V.Message ctx={ctx()} title="Signed out"><p>You're signed out of all lab services. <a href="/login">Sign in again</a>.</p></V.Message>),
   );
-
-  // The provider reports a sign-out (back-channel logout): end the matching sessions here too
-  app.post('/backchannel-logout', async (c) => {
-    const body = await c.req.parseBody();
-    try {
-      const { sid, sub } = await oidc.verifyLogoutToken(String(body.logout_token ?? ''));
-      if (sid) db.deleteSessionsBySid(sid);
-      else if (sub) db.deleteSessionsOf({ iss: oidc.issuer, sub });
-      return c.body(null, 200);
-    } catch (error) {
-      console.error(`Back-channel logout refused: ${(error as Error).message}`);
-      return c.json({ error: 'invalid_request' }, 400);
-    }
-  });
 
   // ---- The overview
   const notMember = (s: SessionRow, serviceName?: string) => {

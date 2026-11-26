@@ -1,5 +1,5 @@
 // The end-to-end test of the lab portal, in a browser: login, membership (requests, invitations), access per
-// service, 2FA, sign-out, back-channel logout, the API bypass, and settings reloads. Run by ./run.sh, which
+// service, 2FA, sign-out (and independence from the provider's session), the API bypass, and settings reloads. Run by ./run.sh, which
 // starts Keycloak (realm.json), Mailpit, the portal and Caddy first.
 const { chromium } = require('playwright');
 const crypto = require('node:crypto');
@@ -249,7 +249,7 @@ setTimeout(() => {
     await kcAdmin('POST', `/users/${user.id}/logout`);
     await sleep(1000);
     await invitee.goto('https://notes.lab.test/');
-    check('signed out at the provider: the portal session ends too (back-channel logout)', invitee.url().startsWith(KC));
+    check("signed out at the provider (e.g. by another app's sign-out): the portal session stays", (await json(invitee)).service === 'notes');
 
     // ---- The portal's own session outlives the provider's (60 seconds idle in this realm)
     console.log('... waiting 70 seconds (the provider session expires)');

@@ -95,7 +95,7 @@ test('daily database copy: consistent, without sessions, 7 kept', async () => {
   const a = { iss: ISS, sub: 'a' };
   db.upsertUser(a, 'a@x.org', true);
   db.addMember(a, 'Admin');
-  db.insertSession({ id: 'h', ...a, sid: null, email: 'a@x.org', email_verified: 1, has_mfa: 0, auth_at: 0, id_token: 't', created_at: 0, last_seen: 0 });
+  db.insertSession({ id: 'h', ...a, email: 'a@x.org', email_verified: 1, has_mfa: 0, auth_at: 0, id_token: 't', created_at: 0, last_seen: 0 });
   for (let d = 1; d <= 9; d++) db.backup(`${dir}/backups`, 7, new Date(Date.UTC(2026, 0, d)));
   assert.equal(db.backup(`${dir}/backups`, 7, new Date(Date.UTC(2026, 0, 9))), null, 'once a day');
   const files = readdirSync(`${dir}/backups`).sort();
