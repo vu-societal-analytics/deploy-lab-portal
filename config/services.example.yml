@@ -1,0 +1,30 @@
+# The services under the lab zone, and who may use them. Copy to services.yml.
+# The portal turns this into Caddy's configuration; a change takes effect within a minute.
+#
+# <subdomain>:            the address: https://<subdomain>.<LAB_DOMAIN>
+#   name, description     shown on the portal
+#   upstream              where the service listens, always on 127.0.0.1
+#   access                members (lab members, default), admins (lab admins), or public (no lab login:
+#                         the service has its own login, or is public)
+#   mfa                   required (a login with a second factor) or optional (default)
+#   api_bypass            paths where requests with an Authorization header skip the lab login, so
+#                         scripts can use the service's own API key (only for services that check it)
+#   max_upload, timeout   for large uploads and long requests, e.g. 2.5GB and 3000s
+#   show                  false: not listed on the portal
+
+services:
+  whisper:
+    name: Whisper
+    description: Transcription of audio
+    upstream: 127.0.0.1:9000
+    access: members
+    mfa: required
+    max_upload: 2.5GB
+    timeout: 3000s
+
+  llm:
+    name: LLM chat
+    description: Language models (Ollama)
+    upstream: 127.0.0.1:8080
+    access: members
+    api_bypass: [/api/*]

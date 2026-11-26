@@ -1,0 +1,60 @@
+# The lab portal: Caddy (HTTPS for lab.<domain> and every service under it) and the portal (login,
+# access to the services, lab membership). Setup: README.md, and the lab's infrastructure documentation.
+name: lab-portal
+
+services:
+  portal:
+    build: ./portal
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICES_FILE: /config/services.yml
+      GROUPS_FILE: /config/groups.yml
+      CADDY_FILE: /caddy/Caddyfile
+      DATABASE_FILE: /data/portal.db
+      BACKUP_DIR: /backups
+      # Local time, for REMINDER_TIME
+      TZ: Europe/Amsterdam
+      # Caddy (on the server's network) reaches the portal here
+      PORTAL_UPSTREAM: 127.0.0.1:3000
+    # Only for Caddy on this server
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      # services.yml and groups.yml: edited on the server, only read by the portal
+      - ./config:/config:ro
+      # The Caddyfile the portal generates from services.yml
+      - ./caddy:/caddy
+      # Members, membership requests, sessions, the log of admin actions
+      - ./data:/data
+      # A daily copy of the database (7 kept), for the server's backup of /opt
+      - ./backups:/backups
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    # On the server's network: it serves ports 80 and 443, and reaches the services on 127.0.0.1
+    network_mode: host
+    # --watch: reloads when the portal writes a new Caddyfile (after a change to services.yml)
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--watch"]
+    volumes:
+      - ./caddy:/etc/caddy:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      portal:
+        condition: service_healthy
+
+volumes:
+  caddy-data:
+  caddy-config:

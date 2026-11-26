@@ -1,0 +1,10 @@
+# Local settings and data: never committed
+.env
+config/services.yml
+config/groups.yml
+caddy/Caddyfile
+caddy/*.tmp
+data/
+backups/
+portal/node_modules/
+portal/dist/

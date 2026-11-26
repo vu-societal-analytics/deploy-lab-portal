@@ -1,0 +1,29 @@
+{
+  "name": "lab-portal",
+  "private": true,
+  "type": "module",
+  "description": "The lab portal: login, access to the lab services, and lab membership",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx src/server.ts",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.11",
+    "hono": "^4.13.22",
+    "jose": "^6.2.18",
+    "nodemailer": "^10.6.1",
+    "openid-client": "^6.9.1",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.11",
+    "@types/nodemailer": "8.0.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
