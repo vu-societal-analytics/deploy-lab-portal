@@ -4,7 +4,9 @@ name: lab-portal
 
 services:
   portal:
-    build: ./portal
+    # Built from portal/ and published by GitHub Actions for every version tag. To upgrade: download
+    # the compose.yml of the new version (it names its own image), then docker compose pull && up -d.
+    image: ghcr.io/vu-societal-analytics/lab-portal:0.1.0
     restart: unless-stopped
     env_file: .env
     environment:

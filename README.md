@@ -79,7 +79,7 @@ Keycloak.
 
 ## Setup
 
-On the lab server, as `sal`, in `/opt/lab-portal`:
+On the lab server, in `/opt/lab-portal`, as the account that owns the apps (`sal` on our servers):
 
 1. **Keycloak**: in the realm (the one AmCAT and AnnoTinder use), create the client `lab-portal`:
    - Client authentication **on** (confidential), Standard flow only, PKCE method **S256**
@@ -90,18 +90,21 @@ On the lab server, as `sal`, in `/opt/lab-portal`:
    - Copy the client secret (Credentials tab).
 
    The portal needs the claims `email`, `email_verified` and `amr` (with `mfa` after a second factor).
-2. **Settings**:
+2. **Download and fill in the settings** (the version: see the repository's tags):
    ```bash
-   cp .env.example .env && chmod 600 .env          # fill in: LAB_DOMAIN, OIDC_*, SMTP_*
-   cp config/services.example.yml config/services.yml
-   cp config/admins.example.yml config/admins.yml
+   mkdir -p /opt/lab-portal/config /opt/lab-portal/caddy && cd /opt/lab-portal
+   V=v0.1.0; R=https://raw.githubusercontent.com/vu-societal-analytics/deploy-lab-portal/$V
+   curl -fsSLO $R/compose.yml
+   curl -fsSL -o .env $R/.env.example && chmod 600 .env       # fill in: LAB_DOMAIN, OIDC_*, SMTP_*
+   curl -fsSL -o config/services.yml $R/config/services.example.yml
+   curl -fsSL -o config/admins.yml $R/config/admins.example.yml
    mkdir -p data backups && sudo chown 1000:1000 data backups caddy
    ```
    The portal runs as user 1000 in its container: it writes `data/`, `backups/` and `caddy/Caddyfile`.
 3. **Start** (ports 80 and 443 must be free: stop any other web server first):
    ```bash
-   docker compose up -d --build
-   docker compose logs -f
+   sudo docker compose pull && sudo docker compose up -d
+   sudo docker compose logs -f
    ```
 4. **DNS**: `lab.<domain>` and `*.lab.<domain>` point to the server. Caddy gets a certificate per
    address from Let's Encrypt.
@@ -116,7 +119,8 @@ On the lab server, as `sal`, in `/opt/lab-portal`:
   invalid it keeps the previous settings and logs why (`docker compose logs portal`).
 - **An old address that moved** (e.g. under `lab.`): add it under `redirects:` in `services.yml`.
 - **Admins**: edit `config/admins.yml`.
-- **Update**: `git pull && docker compose up -d --build`. If the portal then refuses to start with
+- **Update**: download the `compose.yml` of the new version (it names its own image), then
+  `sudo docker compose pull && sudo docker compose up -d`. If the portal then refuses to start with
   "has database version", the database format changed: see the release notes of that version.
 
 ## Settings (.env)
@@ -126,6 +130,10 @@ See `.env.example`. Besides those, for tests only: `AUTH_INSECURE_DISABLE_2FA`,
 `TEST_ALLOW_HTTP_ISSUER`, `TEST_LOCAL_CERTS`.
 
 ## Development and tests
+
+**Releases:** push a version tag (`git tag v0.2.0 && git push origin v0.2.0`), after changing the image
+version in `compose.yml` to match. GitHub Actions (`.github/workflows/image.yml`) runs the tests and
+publishes `ghcr.io/vu-societal-analytics/lab-portal:0.2.0`.
 
 ```bash
 cd portal
