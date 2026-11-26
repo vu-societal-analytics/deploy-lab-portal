@@ -1,5 +1,6 @@
-// services.yml (the services and their access rules) and groups.yml (who is admin, fixed members).
-// Both are edited on the server (or in git) and only read by the portal: the portal never writes them.
+// services.yml (the services and their access rules) and admins.yml (the lab admins, by account ID).
+// Both are edited on the server and only read by the portal: the portal never writes them.
+// Everything the portal itself changes (members, invitations, requests) is in its database.
 import { readFileSync, statSync } from 'node:fs';
 import { parse } from 'yaml';
 
@@ -15,7 +16,7 @@ export type Service = {
   upstream: string;
   /** members: lab members; admins: lab admins; public: no lab login (the service has its own, or is public) */
   access: Access;
-  /** required: a login with a second factor (asked when needed); optional: any login */
+  /** required: a login with a second factor (asked when needed); optional: any login. Always set explicitly. */
   mfa: 'required' | 'optional';
   /** Paths where a request with an Authorization header skips the lab login (the service checks its own key) */
   apiBypass: string[];
@@ -29,11 +30,8 @@ export type Service = {
 /** An old address that now redirects (permanently, keeping the path) to another site, e.g. after a move under lab. */
 export type Redirect = { from: string; to: string };
 
-export type Groups = {
-  admin: string[];
-  /** Fixed lab members, in addition to those approved in the portal */
-  lab: string[];
-};
+/** A lab admin: the account ID (the sub claim of the provider) and a name, for people reading the file. */
+export type Admin = { sub: string; name: string };
 
 const HOSTNAME = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/;
 const SUBDOMAIN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -61,9 +59,9 @@ export function parseServices(text: string, labDomain: string, file = 'services.
     if (!UPSTREAM.test(upstream)) fail(file, `${id}: upstream must be host:port, e.g. 127.0.0.1:9000`);
     const access = (raw.access ?? 'members') as Access;
     if (!['members', 'admins', 'public'].includes(access)) fail(file, `${id}: access must be members, admins or public`);
-    const mfa = raw.mfa ?? 'optional';
-    if (!['required', 'optional'].includes(mfa)) fail(file, `${id}: mfa must be required or optional`);
-    if (access === 'public' && raw.mfa) fail(file, `${id}: mfa has no effect with access: public`);
+    if (access === 'public' && raw.mfa !== undefined) fail(file, `${id}: mfa has no effect with access: public`);
+    const mfa = access === 'public' ? 'optional' : raw.mfa;
+    if (!['required', 'optional'].includes(mfa)) fail(file, `${id}: set mfa to required or optional (whether the service needs a login with a second factor)`);
     const apiBypass = raw.api_bypass ?? [];
     if (!Array.isArray(apiBypass) || !apiBypass.every((p: unknown) => typeof p === 'string' && PATH.test(p)))
       fail(file, `${id}: api_bypass must be a list of paths, e.g. [/api/*]`);
@@ -107,39 +105,37 @@ export function parseRedirects(text: string, labDomain: string, services: Servic
   });
 }
 
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const ACCOUNT_ID = /^[A-Za-z0-9._:@|-]{1,255}$/;
 
-export function parseGroups(text: string, file = 'groups.yml'): Groups {
+export function parseAdmins(text: string, file = 'admins.yml'): Admin[] {
   const doc = parse(text) ?? {};
-  const groups: Groups = { admin: [], lab: [] };
-  for (const [name, list] of Object.entries<any>(doc)) {
-    if (name !== 'admin' && name !== 'lab') fail(file, `unknown group "${name}" (only admin and lab)`);
-    if (list == null) continue;
-    if (!Array.isArray(list)) fail(file, `${name} must be a list of email addresses`);
-    for (const email of list) {
-      if (typeof email !== 'string' || !EMAIL.test(email.trim())) fail(file, `${name}: "${email}" is not an email address`);
-      groups[name].push(email.trim().toLowerCase());
-    }
-  }
-  if (!groups.admin.length) fail(file, 'at least one admin is needed');
-  return groups;
+  for (const key of Object.keys(doc)) if (key !== 'admins') fail(file, `unknown section "${key}" (only admins)`);
+  const entries = doc.admins ?? {};
+  if (typeof entries !== 'object' || Array.isArray(entries)) fail(file, '"admins" must be a map of account ID: name');
+  const admins = Object.entries<any>(entries).map(([sub, name]) => {
+    if (!ACCOUNT_ID.test(sub)) fail(file, `"${sub}" is not an account ID (shown at the bottom of the portal when signed in)`);
+    if (typeof name !== 'string' || !name.trim()) fail(file, `${sub}: give a name, e.g. ${sub}: Jane Doe`);
+    return { sub, name: name.trim() };
+  });
+  if (!admins.length) fail(file, 'at least one admin is needed');
+  return admins;
 }
 
 /** Reads both files, and reads them again when they change (checked at most every few seconds). */
 export class Settings {
   services: Service[] = [];
   redirects: Redirect[] = [];
-  groups: Groups = { admin: [], lab: [] };
+  admins: Admin[] = [];
   private stamp = '';
   private checkedAt = 0;
   onChange?: () => void;
 
-  constructor(private servicesFile: string, private groupsFile: string, private labDomain: string) {
+  constructor(private servicesFile: string, private adminsFile: string, private labDomain: string) {
     this.reload(true);
   }
 
   private currentStamp(): string {
-    return [this.servicesFile, this.groupsFile].map((f) => statSync(f).mtimeMs).join('/');
+    return [this.servicesFile, this.adminsFile].map((f) => statSync(f).mtimeMs).join('/');
   }
 
   /** Throws on invalid files at startup; later, an invalid change is logged and the last good settings stay. */
@@ -148,10 +144,10 @@ export class Settings {
       const text = readFileSync(this.servicesFile, 'utf8');
       const services = parseServices(text, this.labDomain, this.servicesFile);
       const redirects = parseRedirects(text, this.labDomain, services, this.servicesFile);
-      const groups = parseGroups(readFileSync(this.groupsFile, 'utf8'), this.groupsFile);
+      const admins = parseAdmins(readFileSync(this.adminsFile, 'utf8'), this.adminsFile);
       this.services = services;
       this.redirects = redirects;
-      this.groups = groups;
+      this.admins = admins;
       this.stamp = this.currentStamp();
       this.onChange?.();
     } catch (error) {
@@ -177,7 +173,8 @@ export class Settings {
     return this.services.find((s) => s.host === host.toLowerCase());
   }
 
-  isAdmin(email: string): boolean {
-    return this.groups.admin.includes(email.toLowerCase());
+  /** Admins are listed by account ID; the portal accepts logins from one provider only. */
+  isAdmin(sub: string): boolean {
+    return this.admins.some((a) => a.sub === sub);
   }
 }

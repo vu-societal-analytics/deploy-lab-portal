@@ -1,0 +1,11 @@
+# The lab admins: they approve membership requests and invite people on the portal's admin page.
+# Copy to admins.yml. Changes take effect within a minute.
+#
+# By account ID (the provider's "sub"), not by email address: an address can change or be claimed by
+# someone else, an account ID can't. Everyone sees their account ID at the bottom of the portal once
+# signed in. The name is only for people reading this file, and for the log.
+#
+# Admins are always lab members, and need a recent login with a second factor for changes.
+
+admins:
+  00000000-0000-0000-0000-000000000000: Jane Doe

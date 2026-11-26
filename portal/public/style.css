@@ -127,3 +127,13 @@ table.log td { font-size: 0.85rem; padding: 0.35rem 0.75rem; }
   tr { display: block; border-bottom: 1px solid var(--sal-line); }
   td.actions { text-align: left; }
 }
+
+.note {
+  background: #e8f4fb;
+  border: 1px solid #a9d3ee;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin: 0.5rem 0 1rem;
+}
+footer { max-width: 860px; margin: 0 auto; padding: 0 1rem 2rem; font-size: 0.8rem; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.95em; user-select: all; }

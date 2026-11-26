@@ -1,36 +1,43 @@
 /** @jsxImportSource hono/jsx */
 // The portal's routes: the login, the authorization endpoint for Caddy (/auth), the overview of the services,
-// membership requests, and the admin page.
+// membership (requests and invitations), and the admin page.
 import { Hono, type Context } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { csrf } from 'hono/csrf';
 import { secureHeaders } from 'hono/secure-headers';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Config } from './config.js';
-import type { Db, SessionRow } from './db.js';
+import type { Db, Id, SessionRow } from './db.js';
 import type { Settings } from './settings.js';
 import type { Oidc } from './oidc.js';
 import type { Mail } from './mail.js';
-import { decide, isLabMember, safeReturnUrl, type Person } from './authz.js';
+import { decide, isLabMember, safeReturnUrl, type Membership, type Person } from './authz.js';
 import * as V from './views.js';
 
 const SESSION_COOKIE = 'lab_session';
 const LOGIN_COOKIE = 'lab_login';
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** After a rejected request, the next one can be made after this long */
+const REQUEST_AGAIN_AFTER = 7 * 24 * 3600;
 
 const hash = (token: string) => createHash('sha256').update(token).digest('hex');
 const now = () => Math.floor(Date.now() / 1000);
+const idOf = (s: Id): Id => ({ iss: s.iss, sub: s.sub });
 
 export type Deps = { cfg: Config; db: Db; settings: Settings; oidc: Oidc; mail: Mail };
 
 export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
   const app = new Hono();
-  const membership = { isAdmin: (e: string) => settings.isAdmin(e), isMember: (e: string) => settings.groups.lab.includes(e) || db.isMember(e) };
-  const rules = { insecureDisable2fa: cfg.insecureDisable2fa, insecureDisableEmailVerification: cfg.insecureDisableEmailVerification };
+  const membership: Membership = {
+    isAdmin: (p) => p.iss === oidc.issuer && settings.isAdmin(p.sub),
+    isMember: (p) => db.isMember(p),
+  };
+  const rules = { insecureDisable2fa: cfg.insecureDisable2fa };
   const portal = (path: string) => `${cfg.portalUrl}${path}`;
 
-  /** The signed-in person, or null. Checks idle and maximum age, and checks with the provider every few minutes. */
-  async function session(c: Context): Promise<SessionRow | null> {
+  /** The signed-in person, or null. The portal keeps its own sessions: they end after SESSION_IDLE without use,
+   *  after SESSION_MAX, on sign-out, or when the provider reports a sign-out (back-channel logout). */
+  function session(c: Context): SessionRow | null {
     const token = getCookie(c, SESSION_COOKIE);
     if (!token) return null;
     const id = hash(token);
@@ -41,30 +48,44 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
       db.deleteSession(id);
       return null;
     }
-    if (t - row.checked_at > cfg.sessionCheck && row.refresh_token) {
-      const result = await oidc.refresh(row.refresh_token).catch(() => undefined);
-      if (result === null) {
-        // the session at the provider ended (signed out, expired, user removed)
-        db.deleteSession(id);
-        return null;
-      }
-      if (result) db.updateSessionTokens(id, result.refreshToken, result.idToken);
-    }
     if (t - row.last_seen > 60) db.touchSession(id);
     return row;
   }
 
-  const person = (s: SessionRow): Person => ({ email: s.email, emailVerified: !!s.email_verified, hasMfa: !!s.has_mfa });
+  const person = (s: SessionRow): Person => ({ iss: s.iss, sub: s.sub, hasMfa: !!s.has_mfa });
+  const isAdmin = (s: SessionRow) => membership.isAdmin(person(s));
+  const isMember = (s: SessionRow) => isLabMember(person(s), membership);
+  /** Requests and invitations need an address the provider verified (otherwise anyone could claim one) */
+  const verified = (s: { email_verified: number }) => !!s.email_verified || cfg.insecureDisableEmailVerification;
+  /** How an admin appears in the log: the name from admins.yml */
+  const adminName = (s: SessionRow) => settings.admins.find((a) => a.sub === s.sub)?.name ?? s.email;
   const ctx = (s?: SessionRow | null): V.Ctx => ({
     labName: cfg.labName,
     accountUrl: cfg.accountUrl,
     registrationOpen: cfg.registrationOpen,
     email: s?.email,
-    isAdmin: s ? settings.isAdmin(s.email) : false,
+    accountId: s?.sub,
+    isAdmin: s ? isAdmin(s) : false,
   });
   /** Admin changes need a 2FA login of at most AUTH_STEP_UP_MAX_AGE seconds ago (with insecure 2FA: a recent login). */
   const recentStepUp = (s: SessionRow) => (cfg.insecureDisable2fa || !!s.has_mfa) && now() - s.auth_at <= cfg.stepUpMaxAge;
   const loginUrl = (rd: string, stepUp = false) => portal(`/login?rd=${encodeURIComponent(rd)}${stepUp ? '&step_up=1' : ''}`);
+
+  /** At sign-in: someone invited by email becomes a member when the provider verified that address. */
+  function joinByInvitation(id: Id, email: string, emailVerified: boolean) {
+    if (!emailVerified && !cfg.insecureDisableEmailVerification) return;
+    const invitation = db.getInvitation(email);
+    if (!invitation) return;
+    db.transaction(() => {
+      if (!db.isMember(id)) {
+        db.addMember(id, invitation.added_by);
+        db.setUserName(id, invitation.name);
+        db.settleRequestsOf(id, invitation.added_by);
+        db.log(invitation.added_by, 'invited, joined', email);
+      }
+      db.removeInvitation(email);
+    });
+  }
 
   app.use('*', async (_c, next) => {
     settings.refresh();
@@ -82,19 +103,19 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
   app.get('/health', (c) => c.text('ok'));
 
   // ---- Authorization endpoint for Caddy (forward_auth): only reachable from Caddy, not through the portal's site
-  app.get('/auth', async (c) => {
+  app.get('/auth', (c) => {
     const host = (c.req.header('X-Forwarded-Host') ?? '').toLowerCase();
     const uri = c.req.header('X-Forwarded-Uri') ?? '/';
     const service = settings.serviceForHost(host);
     if (!service) return c.text('Unknown service', 403);
     const original = `https://${host}${uri.startsWith('/') ? uri : '/'}`;
-    const s = await session(c);
+    const s = session(c);
     const decision = decide(service, s ? person(s) : null, membership, rules);
     switch (decision.result) {
       case 'allow':
         if (s) {
-          c.header('X-Auth-Request-Email', s.email);
           c.header('X-Auth-Request-User', s.sub);
+          c.header('X-Auth-Request-Email', s.email);
         }
         return c.body(null, 200);
       case 'login':
@@ -102,7 +123,7 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
       case 'mfa':
         return c.redirect(portal(`/mfa?rd=${encodeURIComponent(original)}`), 302);
       default:
-        return c.redirect(portal(`/access?service=${encodeURIComponent(service.id)}&reason=${decision.result}`), 302);
+        return c.redirect(portal(`/access?service=${encodeURIComponent(service.id)}`), 302);
     }
   });
 
@@ -133,22 +154,24 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
       console.error(`Login failed: ${(error as Error).message}`);
       return c.html(<V.Message ctx={ctx()} title="Sign-in failed"><p>Please <a href="/login">try again</a>.</p></V.Message>, 400);
     }
+    const id = { iss: result.iss, sub: result.sub };
+    db.upsertUser(id, result.email, result.emailVerified);
+    joinByInvitation(id, result.email, result.emailVerified);
     // A new session (a new cookie value) at every login
     const old = getCookie(c, SESSION_COOKIE);
     if (old) db.deleteSession(hash(old));
     const token = randomBytes(32).toString('base64url');
     const t = now();
     db.insertSession({
-      id: hash(token), email: result.email, sub: result.sub, sid: result.sid, email_verified: result.emailVerified ? 1 : 0,
-      has_mfa: result.hasMfa ? 1 : 0, auth_at: result.authAt, id_token: result.idToken, refresh_token: result.refreshToken,
-      created_at: t, last_seen: t, checked_at: t,
+      id: hash(token), ...id, sid: result.sid, email: result.email, email_verified: result.emailVerified ? 1 : 0,
+      has_mfa: result.hasMfa ? 1 : 0, auth_at: result.authAt, id_token: result.idToken, created_at: t, last_seen: t,
     });
     setCookie(c, SESSION_COOKIE, token, { domain: cfg.labDomain, path: '/', httpOnly: true, secure: true, sameSite: 'Lax', maxAge: cfg.sessionMax });
     if (login.step_up && !result.hasMfa && !cfg.insecureDisable2fa) return c.redirect(portal(`/mfa?rd=${encodeURIComponent(login.rd)}&retried=1`), 302);
     return c.redirect(login.rd, 302);
   });
 
-  app.post('/logout', async (c) => {
+  app.post('/logout', (c) => {
     const token = getCookie(c, SESSION_COOKIE);
     const row = token ? db.getSession(hash(token)) : undefined;
     if (token) db.deleteSession(hash(token));
@@ -166,8 +189,8 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
     const body = await c.req.parseBody();
     try {
       const { sid, sub } = await oidc.verifyLogoutToken(String(body.logout_token ?? ''));
-      if (sid) db.deleteSessionsBy('sid', sid);
-      else if (sub) db.deleteSessionsBy('sub', sub);
+      if (sid) db.deleteSessionsBySid(sid);
+      else if (sub) db.deleteSessionsOf({ iss: oidc.issuer, sub });
       return c.body(null, 200);
     } catch (error) {
       console.error(`Back-channel logout refused: ${(error as Error).message}`);
@@ -176,31 +199,39 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
   });
 
   // ---- The overview
-  app.get('/', async (c) => {
-    const s = await session(c);
+  const notMember = (s: SessionRow, serviceName?: string) => {
+    const last = db.lastRequestOf(idOf(s));
+    return (
+      <V.NotMember
+        ctx={ctx(s)}
+        verified={verified(s)}
+        pending={last?.status === 'pending' ? last : undefined}
+        rejected={last?.status === 'rejected' && now() - (last.decided_at ?? 0) < REQUEST_AGAIN_AFTER ? last : undefined}
+        serviceName={serviceName}
+      />
+    );
+  };
+
+  app.get('/', (c) => {
+    const s = session(c);
     if (!s) return c.html(<V.Welcome ctx={ctx()} />);
-    if (!s.email_verified && !cfg.insecureDisableEmailVerification)
-      return c.html(<V.Message ctx={ctx(s)} title="Email address not verified"><p>Verify your email address in your <a href={cfg.accountUrl}>account</a>, then sign in again.</p></V.Message>);
-    if (!isLabMember(s.email, membership)) return c.html(<V.NotMember ctx={ctx(s)} pending={db.pendingRequestOf(s.email)} />);
-    const admin = settings.isAdmin(s.email);
+    if (!isMember(s)) return c.html(notMember(s));
+    const admin = isAdmin(s);
     const visible = settings.services.filter((sv) => sv.show && (sv.access !== 'admins' || admin));
     return c.html(<V.Home ctx={ctx(s)} services={visible} hasMfa={!!s.has_mfa} />);
   });
 
-  // Why a service refused: not a member (request membership), admins only, or an unverified address
-  app.get('/access', async (c) => {
-    const s = await session(c);
+  // Why a service refused: not a member (request membership), or admins only
+  app.get('/access', (c) => {
+    const s = session(c);
     if (!s) return c.redirect(loginUrl(portal('/')), 302);
-    const service = settings.services.find((sv) => sv.id === c.req.query('service'));
-    const name = service?.name ?? 'This service';
-    if (!s.email_verified && !cfg.insecureDisableEmailVerification)
-      return c.html(<V.Message ctx={ctx(s)} title="Email address not verified"><p>Verify your email address in your <a href={cfg.accountUrl}>account</a>, then sign in again.</p></V.Message>, 403);
-    if (!isLabMember(s.email, membership)) return c.html(<V.NotMember ctx={ctx(s)} pending={db.pendingRequestOf(s.email)} serviceName={name} />, 403);
+    const name = settings.services.find((sv) => sv.id === c.req.query('service'))?.name ?? 'This service';
+    if (!isMember(s)) return c.html(notMember(s, name), 403);
     return c.html(<V.Message ctx={ctx(s)} title="No access"><p>{name} is only for lab admins.</p></V.Message>, 403);
   });
 
-  app.get('/mfa', async (c) => {
-    const s = await session(c);
+  app.get('/mfa', (c) => {
+    const s = session(c);
     const rd = safeReturnUrl(c.req.query('rd'), cfg.labDomain);
     const service = settings.serviceForHost(new URL(rd).hostname);
     return c.html(<V.NeedsMfa ctx={ctx(s)} serviceName={service?.name ?? 'This service'} retryUrl={loginUrl(rd, true)} afterRetry={c.req.query('retried') === '1'} />);
@@ -208,26 +239,34 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
 
   // ---- Membership requests
   app.post('/request', async (c) => {
-    const s = await session(c);
+    const s = session(c);
     if (!s) return c.redirect(loginUrl(portal('/')), 302);
-    if (!s.email_verified && !cfg.insecureDisableEmailVerification) return c.redirect('/', 302);
-    if (isLabMember(s.email, membership) || db.pendingRequestOf(s.email)) return c.redirect('/', 302);
+    const id = idOf(s);
+    const last = db.lastRequestOf(id);
+    const blocked =
+      !verified(s) ||
+      isMember(s) ||
+      last?.status === 'pending' ||
+      (last?.status === 'rejected' && now() - (last.decided_at ?? 0) < REQUEST_AGAIN_AFTER);
+    if (blocked) return c.redirect('/', 302);
     const body = await c.req.parseBody();
     const name = String(body.name ?? '').trim().slice(0, 200);
     const message = String(body.message ?? '').trim().slice(0, 2000);
     if (!name) return c.redirect('/', 302);
-    db.addRequest(s.email, name, message);
-    db.log(s.email, 'requested membership', s.email);
+    db.transaction(() => {
+      db.setUserName(id, name, true);
+      db.addRequest(id, name, message);
+      db.log(s.email, 'requested membership', s.email);
+    });
     await mail.requestReceived();
     return c.redirect('/', 302);
   });
 
   // ---- Admin
   async function admin(c: Context): Promise<SessionRow | Response> {
-    const s = await session(c);
+    const s = session(c);
     if (!s) return c.redirect(loginUrl(portal('/admin'), true), 302);
-    if (!settings.isAdmin(s.email) || (!s.email_verified && !cfg.insecureDisableEmailVerification))
-      return c.html(<V.Message ctx={ctx(s)} title="No access"><p>The admin page is only for lab admins.</p></V.Message>, 403);
+    if (!isAdmin(s)) return c.html(<V.Message ctx={ctx(s)} title="No access"><p>The admin page is only for lab admins.</p></V.Message>, 403);
     return s;
   }
   async function adminChange(c: Context): Promise<SessionRow | Response> {
@@ -236,13 +275,18 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
     if (!recentStepUp(s)) return c.redirect(loginUrl(portal('/admin'), true), 302);
     return s;
   }
+  const done = (c: Context, note: V.AdminNote, email = '') =>
+    c.redirect(`/admin?note=${note}${email ? `&email=${encodeURIComponent(email)}` : ''}`, 302);
 
   app.get('/admin', async (c) => {
     const s = await admin(c);
     if (s instanceof Response) return s;
+    const admins = settings.admins.map((a) => ({ ...a, email: db.getUser({ iss: oidc.issuer, sub: a.sub })?.email }));
+    const note = V.ADMIN_NOTES.includes(c.req.query('note') as V.AdminNote) ? (c.req.query('note') as V.AdminNote) : undefined;
     return c.html(
-      <V.Admin ctx={ctx(s)} requests={db.pendingRequests()} members={db.members()} fixedMembers={settings.groups.lab} admins={settings.groups.admin}
-        log={db.recentLog()} mailEnabled={mail.enabled} recent={recentStepUp(s)} stepUpUrl={loginUrl(portal('/admin'), true)} />,
+      <V.Admin ctx={ctx(s)} requests={db.pendingRequests()} invitations={db.invitations()} members={db.members()} admins={admins}
+        log={db.recentLog()} mailEnabled={mail.enabled} recent={recentStepUp(s)} stepUpUrl={loginUrl(portal('/admin'), true)}
+        note={note} noteEmail={c.req.query('email')} />,
     );
   });
 
@@ -252,40 +296,66 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
     const request = db.getRequest(Number(c.req.param('id')));
     const decision = c.req.param('decision');
     if (!request || request.status !== 'pending' || !['approve', 'reject'].includes(decision)) return c.redirect('/admin', 302);
+    const by = adminName(s);
     if (decision === 'approve') {
-      db.addMember(request.email, request.name, s.email);
-      db.decideRequest(request.id, 'approved', s.email);
-      db.log(s.email, 'approved', request.email);
+      db.transaction(() => {
+        db.addMember(idOf(request), by);
+        db.decideRequest(request.id, 'approved', by);
+        db.log(by, 'approved', request.email);
+      });
       await mail.welcome(request.email, request.name);
     } else {
-      db.decideRequest(request.id, 'rejected', s.email);
-      db.log(s.email, 'rejected', request.email);
+      db.decideRequest(request.id, 'rejected', by);
+      db.log(by, 'rejected', request.email);
     }
     return c.redirect('/admin', 302);
   });
 
-  app.post('/admin/members', async (c) => {
+  // Inviting someone by email address: someone who already signed in with that verified address becomes a member
+  // now; otherwise the invitation waits for their first sign-in.
+  app.post('/admin/invitations', async (c) => {
     const s = await adminChange(c);
     if (s instanceof Response) return s;
     const body = await c.req.parseBody();
     const email = String(body.email ?? '').trim().toLowerCase();
     const name = String(body.name ?? '').trim().slice(0, 200);
-    if (!EMAIL.test(email) || !name) return c.redirect('/admin', 302);
-    const pending = db.pendingRequestOf(email);
-    if (pending) db.decideRequest(pending.id, 'approved', s.email);
-    db.addMember(email, name, s.email);
-    db.log(s.email, 'added', email);
-    await mail.welcome(email, name);
+    if (!EMAIL.test(email) || !name) return done(c, 'invalid');
+    if (db.memberByEmail(email)) return done(c, 'already-member', email);
+    const by = adminName(s);
+    const user = db.userByVerifiedEmail(email);
+    if (user) {
+      db.transaction(() => {
+        db.addMember(idOf(user), by);
+        db.setUserName(idOf(user), name);
+        db.settleRequestsOf(idOf(user), by);
+        db.log(by, 'added', email);
+      });
+      await mail.welcome(email, name);
+      return done(c, 'added', email);
+    }
+    db.addInvitation(email, name, by);
+    db.log(by, 'invited', email);
+    await mail.invitation(email, name);
+    return done(c, 'invited', email);
+  });
+
+  app.post('/admin/invitations/remove', async (c) => {
+    const s = await adminChange(c);
+    if (s instanceof Response) return s;
+    const email = String((await c.req.parseBody()).email ?? '').trim().toLowerCase();
+    if (db.removeInvitation(email)) db.log(adminName(s), 'withdrew invitation', email);
     return c.redirect('/admin', 302);
   });
 
   app.post('/admin/members/remove', async (c) => {
     const s = await adminChange(c);
     if (s instanceof Response) return s;
-    const email = String((await c.req.parseBody()).email ?? '').trim().toLowerCase();
-    if (db.removeMember(email)) {
-      db.deleteSessionsOf(email); // takes effect immediately
-      db.log(s.email, 'removed', email);
+    const body = await c.req.parseBody();
+    const id = { iss: String(body.iss ?? ''), sub: String(body.sub ?? '') };
+    const user = db.getUser(id);
+    if (user && db.removeMember(id)) {
+      db.deleteSessionsOf(id); // takes effect immediately
+      db.log(adminName(s), 'removed', user.email);
     }
     return c.redirect('/admin', 302);
   });

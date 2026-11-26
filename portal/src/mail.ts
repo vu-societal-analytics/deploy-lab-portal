@@ -1,16 +1,16 @@
 // Email (optional, with SMTP settings in .env): notifications to the lab admins about membership requests
-// (at most one per hour, and a daily reminder while requests are pending), and a welcome to new members.
+// (at most one per hour, and a daily reminder while requests are pending), invitations, and a welcome to new members.
 import nodemailer from 'nodemailer';
 import type { Config } from './config.js';
 import type { Db } from './db.js';
-import type { Settings } from './settings.js';
 
 const HOUR = 3600;
 
 export class Mail {
   private transport: ReturnType<typeof nodemailer.createTransport> | null;
 
-  constructor(private cfg: Config, private db: Db, private settings: Settings) {
+  /** adminEmails: the current addresses of the lab admins (known once they signed in) */
+  constructor(private cfg: Config, private db: Db, private adminEmails: () => string[]) {
     this.transport = cfg.smtp
       ? nodemailer.createTransport({
           host: cfg.smtp.host,
@@ -38,7 +38,7 @@ export class Mail {
 
   private summary(): string {
     const pending = this.db.pendingRequests();
-    const lines = pending.map((r) => `- ${r.name} <${r.email}>${r.message ? `: ${r.message.slice(0, 200)}` : ''}`);
+    const lines = pending.map((r) => `- ${r.name} <${r.email}>${r.message ? `: ${r.message.slice(0, 200).replace(/\s+/g, ' ')}` : ''}`);
     return `${pending.length} pending membership request(s) for the ${this.cfg.labName}:\n\n${lines.join('\n')}\n\nApprove or reject them on the admin page: ${this.cfg.portalUrl}/admin\n`;
   }
 
@@ -56,7 +56,9 @@ export class Mail {
     this.db.setMeta('notified_at', String(Math.floor(Date.now() / 1000)));
     this.db.setMeta('notify_due', '0');
     if (!this.db.pendingRequests().length) return;
-    await this.send(this.settings.groups.admin, `Lab membership requests`, this.summary());
+    const to = this.adminEmails();
+    if (!to.length) console.error('No email to the admins: none of them has signed in yet, so their addresses are unknown');
+    await this.send(to, `Lab membership requests`, this.summary());
   }
 
   /** Runs every minute: the delayed notification, and the daily reminder. */
@@ -71,11 +73,21 @@ export class Mail {
     }
   }
 
+  async invitation(email: string, name: string) {
+    await this.send(
+      [email],
+      `Invitation to the ${this.cfg.labName}`,
+      `Hello ${name},\n\nYou're invited to become a member of the ${this.cfg.labName}. Sign in on ${this.cfg.portalUrl} ` +
+        `with this email address (${email}); if you have no account yet, create one there with this address. ` +
+        `Your membership starts at your first sign-in, once the address is verified.\n`,
+    );
+  }
+
   async welcome(email: string, name: string) {
     await this.send(
       [email],
       `Welcome to the ${this.cfg.labName}`,
-      `Hello ${name},\n\nYou are now a member of the ${this.cfg.labName}. The lab's services are listed on ${this.cfg.portalUrl}\n\n` +
+      `Hello ${name},\n\nYou're now a member of the ${this.cfg.labName}. The lab's services are listed on ${this.cfg.portalUrl}\n\n` +
         `Please protect your account with a second factor (an authenticator app or a passkey): ${this.cfg.accountUrl} (Account security, Signing in).\n`,
     );
   }

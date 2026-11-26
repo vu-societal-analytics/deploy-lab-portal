@@ -36,7 +36,7 @@ export function loadConfig() {
     /** Where the portal listens (Caddy proxies to it) */
     listenHost: env('PORTAL_LISTEN_HOST', '0.0.0.0'),
     listenPort: Number(env('PORTAL_PORT', '3000')),
-    /** The OIDC provider (the lab realm of Keycloak) */
+    /** The OIDC provider (the realm of Keycloak that AmCAT and AnnoTinder use too) */
     oidcHost: env('OIDC_HOST'),
     oidcClientId: env('OIDC_CLIENT_ID'),
     oidcClientSecret: env('OIDC_CLIENT_SECRET'),
@@ -45,16 +45,15 @@ export function loadConfig() {
     stepUpMaxAge: seconds('AUTH_STEP_UP_MAX_AGE', 600),
     insecureDisable2fa: flag('AUTH_INSECURE_DISABLE_2FA'),
     insecureDisableEmailVerification: flag('AUTH_INSECURE_DISABLE_EMAIL_VERIFICATION'),
-    /** Sessions: signed out after this long without use, and at most this long in total */
+    /** The portal's own sessions: signed out after this long without use, and at most this long in total.
+     *  Signing out at the provider ends them too (back-channel logout). */
     sessionIdle: seconds('SESSION_IDLE', 12 * 3600),
     sessionMax: seconds('SESSION_MAX', 7 * 24 * 3600),
-    /** How often a session is checked with the provider (removed users and sign-outs take effect) */
-    sessionCheck: seconds('SESSION_CHECK', 600),
     /** Where users manage their account and 2FA (the account console of the realm) */
     accountUrl: env('ACCOUNT_URL', `${env('OIDC_HOST').replace(/\/+$/, '')}/account`),
     /** Files */
     servicesFile: env('SERVICES_FILE', '/config/services.yml'),
-    groupsFile: env('GROUPS_FILE', '/config/groups.yml'),
+    adminsFile: env('ADMINS_FILE', '/config/admins.yml'),
     caddyFile: env('CADDY_FILE', '/caddy/Caddyfile'),
     databaseFile: env('DATABASE_FILE', '/data/portal.db'),
     /** A daily copy of the database (empty: none) */
@@ -62,7 +61,7 @@ export function loadConfig() {
     /** The address Caddy proxies the portal to */
     portalUpstream: env('PORTAL_UPSTREAM', '127.0.0.1:3000'),
     acmeEmail: env('ACME_EMAIL', ''),
-    /** Email (optional): notifications to admins, and a welcome to new members */
+    /** Email (optional): notifications to admins, invitations, and a welcome to new members */
     smtp: process.env.SMTP_HOST
       ? {
           host: env('SMTP_HOST'),

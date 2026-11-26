@@ -1,0 +1,21 @@
+services:
+  notes:
+    name: Notes
+    description: For members, with an API
+    upstream: 127.0.0.1:9001
+    mfa: optional
+    api_bypass: [/api/*]
+  secret:
+    name: Secret
+    description: Needs a second factor
+    upstream: 127.0.0.1:9002
+    mfa: required
+  admintool:
+    name: Admin tool
+    upstream: 127.0.0.1:9003
+    access: admins
+    mfa: required
+  open:
+    name: Open
+    upstream: 127.0.0.1:9003
+    access: public

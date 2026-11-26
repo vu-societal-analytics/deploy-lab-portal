@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decide, safeReturnUrl } from '../src/authz.ts';
-import { parseServices, parseGroups, parseRedirects, type Service } from '../src/settings.ts';
+import { parseServices, parseAdmins, parseRedirects, type Service } from '../src/settings.ts';
 import { renderCaddyfile } from '../src/caddy.ts';
 import { hasMfa } from '../src/oidc.ts';
 
@@ -10,24 +10,23 @@ const svc = (over: Partial<Service> = {}): Service => ({
   id: 'whisper', host: `whisper.${D}`, name: 'Whisper', description: '', upstream: '127.0.0.1:9000',
   access: 'members', mfa: 'optional', apiBypass: [], show: true, ...over,
 });
-const m = { isAdmin: (e: string) => e === 'admin@x.org', isMember: (e: string) => e === 'member@x.org' };
-const rules = { insecureDisable2fa: false, insecureDisableEmailVerification: false };
-const who = (email: string, over = {}) => ({ email, emailVerified: true, hasMfa: false, ...over });
+const ISS = 'https://id.example.org/realms/idp';
+const m = { isAdmin: (p: { sub: string }) => p.sub === 'admin', isMember: (p: { sub: string }) => p.sub === 'member' };
+const rules = { insecureDisable2fa: false };
+const who = (sub: string, over = {}) => ({ iss: ISS, sub, hasMfa: false, ...over });
 
 test('access rules', () => {
   assert.equal(decide(svc(), null, m, rules).result, 'login');
-  assert.equal(decide(svc(), who('member@x.org'), m, rules).result, 'allow');
-  assert.equal(decide(svc(), who('admin@x.org'), m, rules).result, 'allow', 'admins are members');
-  assert.equal(decide(svc(), who('other@x.org'), m, rules).result, 'not-member');
-  assert.equal(decide(svc(), who('member@x.org', { emailVerified: false }), m, rules).result, 'unverified');
-  assert.equal(decide(svc({ access: 'admins' }), who('member@x.org'), m, rules).result, 'not-admin');
-  assert.equal(decide(svc({ access: 'admins' }), who('admin@x.org'), m, rules).result, 'allow');
-  assert.equal(decide(svc({ mfa: 'required' }), who('member@x.org'), m, rules).result, 'mfa');
-  assert.equal(decide(svc({ mfa: 'required' }), who('member@x.org', { hasMfa: true }), m, rules).result, 'allow');
-  assert.equal(decide(svc({ mfa: 'required' }), who('other@x.org', { hasMfa: true }), m, rules).result, 'not-member', 'membership before 2FA');
+  assert.equal(decide(svc(), who('member'), m, rules).result, 'allow');
+  assert.equal(decide(svc(), who('admin'), m, rules).result, 'allow', 'admins are members');
+  assert.equal(decide(svc(), who('other'), m, rules).result, 'not-member');
+  assert.equal(decide(svc({ access: 'admins' }), who('member'), m, rules).result, 'not-admin');
+  assert.equal(decide(svc({ access: 'admins' }), who('admin'), m, rules).result, 'allow');
+  assert.equal(decide(svc({ mfa: 'required' }), who('member'), m, rules).result, 'mfa');
+  assert.equal(decide(svc({ mfa: 'required' }), who('member', { hasMfa: true }), m, rules).result, 'allow');
+  assert.equal(decide(svc({ mfa: 'required' }), who('other', { hasMfa: true }), m, rules).result, 'not-member', 'membership before 2FA');
   assert.equal(decide(svc({ access: 'public' }), null, m, rules).result, 'allow');
-  assert.equal(decide(svc({ mfa: 'required' }), who('member@x.org'), m, { ...rules, insecureDisable2fa: true }).result, 'allow');
-  assert.equal(decide(svc(), who('member@x.org', { emailVerified: false }), m, { ...rules, insecureDisableEmailVerification: true }).result, 'allow');
+  assert.equal(decide(svc({ mfa: 'required' }), who('member'), m, { insecureDisable2fa: true }).result, 'allow');
 });
 
 test('only addresses in the lab zone to return to', () => {
@@ -43,27 +42,33 @@ test('services.yml', () => {
   const s = parseServices(`services:\n  whisper:\n    upstream: 127.0.0.1:9000\n    mfa: required\n    api_bypass: [/api/*]\n    max_upload: 2.5GB\n    timeout: 3000s\n`, D);
   assert.equal(s[0].host, `whisper.${D}`);
   assert.equal(s[0].access, 'members');
+  assert.equal(parseServices('services:\n  a:\n    upstream: 127.0.0.1:1\n    access: public\n', D)[0].mfa, 'optional');
+  assert.throws(() => parseServices('services:\n  a:\n    upstream: 127.0.0.1:1\n', D), /set mfa/, 'mfa must be chosen');
   for (const bad of [
-    'services:\n  Bad_Name:\n    upstream: 127.0.0.1:1',
-    'services:\n  a:\n    upstream: nope',
-    'services:\n  a:\n    upstream: 127.0.0.1:1\n    access: everyone',
-    'services:\n  a:\n    upstream: 127.0.0.1:1\n    typo: 1',
+    'services:\n  Bad_Name:\n    upstream: 127.0.0.1:1\n    mfa: optional',
+    'services:\n  a:\n    upstream: nope\n    mfa: optional',
+    'services:\n  a:\n    upstream: 127.0.0.1:1\n    access: everyone\n    mfa: optional',
+    'services:\n  a:\n    upstream: 127.0.0.1:1\n    mfa: optional\n    typo: 1',
+    'services:\n  a:\n    upstream: 127.0.0.1:1\n    mfa: sometimes',
     'services:\n  a:\n    upstream: 127.0.0.1:1\n    access: public\n    mfa: required',
-    'services:\n  a:\n    upstream: 127.0.0.1:1\n    api_bypass: [api]',
-    'services:\n  a:\n    upstream: "127.0.0.1:1\\n}\\nevil {"',
+    'services:\n  a:\n    upstream: 127.0.0.1:1\n    mfa: optional\n    api_bypass: [api]',
+    'services:\n  a:\n    upstream: "127.0.0.1:1\\n}\\nevil {"\n    mfa: optional',
   ]) assert.throws(() => parseServices(bad, D), undefined, bad);
 });
 
-test('groups.yml', () => {
-  const g = parseGroups('admin:\n  - Admin@X.org\nlab:\n  - a@x.org\n');
-  assert.deepEqual(g, { admin: ['admin@x.org'], lab: ['a@x.org'] });
-  assert.throws(() => parseGroups('admin: []\n'));
-  assert.throws(() => parseGroups('admin: [a@x.org]\nstaff: [b@x.org]\n'));
-  assert.throws(() => parseGroups('admin: [not-an-email]\n'));
+test('admins.yml', () => {
+  assert.deepEqual(parseAdmins('admins:\n  0b6c7e1a-55c4-4f5e-9d3b-1e2f3a4b5c6d: Jane Doe\n'), [
+    { sub: '0b6c7e1a-55c4-4f5e-9d3b-1e2f3a4b5c6d', name: 'Jane Doe' },
+  ]);
+  assert.throws(() => parseAdmins('admins: {}\n'), /at least one/);
+  assert.throws(() => parseAdmins('admins:\n  abc: Jane\nlab: []\n'), /unknown section/);
+  assert.throws(() => parseAdmins('admins:\n  "abc def": Jane\n'), /not an account ID/);
+  assert.throws(() => parseAdmins('admins:\n  abc:\n'), /give a name/);
+  assert.throws(() => parseAdmins('admins:\n  - abc\n'), /map/);
 });
 
 test('Caddyfile', () => {
-  const services = parseServices(`services:\n  whisper:\n    upstream: 127.0.0.1:9000\n    api_bypass: [/api/*]\n    timeout: 300s\n  open:\n    upstream: 127.0.0.1:9001\n    access: public\n`, D);
+  const services = parseServices(`services:\n  whisper:\n    upstream: 127.0.0.1:9000\n    mfa: optional\n    api_bypass: [/api/*]\n    timeout: 300s\n  open:\n    upstream: 127.0.0.1:9001\n    access: public\n`, D);
   const f = renderCaddyfile(services, { labDomain: D, portalUpstream: '127.0.0.1:3000', acmeEmail: 'a@x.org' });
   assert.match(f, new RegExp(`^${D} \\{[\\s\\S]*respond @auth 404`, 'm'), 'the authorization endpoint is closed on the portal site');
   assert.match(f, /whisper\.lab\.example\.org \{\n\trequest_header -X-Auth-Request-Email\n\trequest_header -X-Auth-Request-User/);
@@ -87,8 +92,10 @@ test('daily database copy: consistent, without sessions, 7 kept', async () => {
   const { DatabaseSync } = await import('node:sqlite');
   const dir = mkdtempSync(`${tmpdir()}/portal-`);
   const db = new Db(`${dir}/portal.db`);
-  db.addMember('a@x.org', 'A', 'admin@x.org');
-  db.insertSession({ id: 'h', email: 'a@x.org', sub: 's', sid: null, email_verified: 1, has_mfa: 0, auth_at: 0, id_token: 't', refresh_token: 'r', created_at: 0, last_seen: 0, checked_at: 0 });
+  const a = { iss: ISS, sub: 'a' };
+  db.upsertUser(a, 'a@x.org', true);
+  db.addMember(a, 'Admin');
+  db.insertSession({ id: 'h', ...a, sid: null, email: 'a@x.org', email_verified: 1, has_mfa: 0, auth_at: 0, id_token: 't', created_at: 0, last_seen: 0 });
   for (let d = 1; d <= 9; d++) db.backup(`${dir}/backups`, 7, new Date(Date.UTC(2026, 0, d)));
   assert.equal(db.backup(`${dir}/backups`, 7, new Date(Date.UTC(2026, 0, 9))), null, 'once a day');
   const files = readdirSync(`${dir}/backups`).sort();
@@ -99,7 +106,7 @@ test('daily database copy: consistent, without sessions, 7 kept', async () => {
 });
 
 test('redirects: validated, rendered as permanent redirects', () => {
-  const yml = `services:\n  whisper:\n    upstream: 127.0.0.1:9000\nredirects:\n  whisper.example.org: https://whisper.${D}\n`;
+  const yml = `services:\n  whisper:\n    upstream: 127.0.0.1:9000\n    mfa: optional\nredirects:\n  whisper.example.org: https://whisper.${D}\n`;
   const services = parseServices(yml, D);
   const r = parseRedirects(yml, D, services);
   assert.deepEqual(r, [{ from: 'whisper.example.org', to: `https://whisper.${D}` }]);
@@ -112,6 +119,37 @@ test('redirects: validated, rendered as permanent redirects', () => {
     `redirects:\n  old.example.org: https://x.org/path`, // not an origin
     `redirects:\n  old.example.org: "https://x.org {\\n}"`, // injection
     `redirects:\n  "old.example.org {": https://x.org`,
-  ]) assert.throws(() => parseRedirects(`services:\n  whisper:\n    upstream: 127.0.0.1:9000\n${bad}\n`, D, services), undefined, bad);
+  ]) assert.throws(() => parseRedirects(`services:\n  whisper:\n    upstream: 127.0.0.1:9000\n    mfa: optional\n${bad}\n`, D, services), undefined, bad);
   assert.throws(() => parseServices(`servics:\n  a: {}\n`, D), /unknown section/);
+});
+
+test('users by issuer and account ID: the email address can change, membership stays', async () => {
+  const { Db } = await import('../src/db.ts');
+  const db = new Db(':memory:');
+  const a = { iss: ISS, sub: 'a' };
+  db.upsertUser(a, 'old@x.org', true);
+  db.addMember(a, 'Admin');
+  db.upsertUser(a, 'new@x.org', false);
+  assert.equal(db.isMember(a), true);
+  assert.equal(db.members()[0].email, 'new@x.org');
+  assert.equal(db.isMember({ iss: 'https://other.example.org', sub: 'a' }), false, 'another issuer is another person');
+  assert.equal(db.userByVerifiedEmail('new@x.org'), undefined, 'not verified');
+  db.upsertUser(a, 'new@x.org', true);
+  assert.equal(db.userByVerifiedEmail('new@x.org')?.sub, 'a');
+  assert.deepEqual(db.emailsOf(['a', 'unknown'], ISS), ['new@x.org']);
+  db.addRequest(a, 'A', 'hi');
+  assert.equal(db.pendingRequests()[0].email, 'new@x.org');
+  db.settleRequestsOf(a, 'Admin');
+  assert.equal(db.pendingRequests().length, 0);
+  assert.equal(db.lastRequestOf(a)?.status, 'approved');
+});
+
+test('an older database is refused, not silently changed', async () => {
+  const { Db } = await import('../src/db.ts');
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { DatabaseSync } = await import('node:sqlite');
+  const file = `${mkdtempSync(`${tmpdir()}/portal-`)}/old.db`;
+  new DatabaseSync(file).exec('CREATE TABLE members (email TEXT PRIMARY KEY)');
+  assert.throws(() => new Db(file), /database version 0/);
 });

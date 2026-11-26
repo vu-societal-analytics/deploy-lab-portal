@@ -2,9 +2,18 @@
 // The portal's pages: plain HTML and one stylesheet, in the look of the lab's login pages.
 import type { Child } from 'hono/jsx';
 import type { Service } from './settings.js';
-import type { MemberRow, RequestRow } from './db.js';
+import type { Admin as AdminEntry } from './settings.js';
+import type { InvitationRow, LogRow, MemberRow, RequestRow } from './db.js';
 
-export type Ctx = { labName: string; accountUrl: string; registrationOpen: boolean; email?: string; isAdmin?: boolean };
+export type Ctx = {
+  labName: string;
+  accountUrl: string;
+  registrationOpen: boolean;
+  email?: string;
+  /** The account ID (sub): shown so admins can be listed in admins.yml */
+  accountId?: string;
+  isAdmin?: boolean;
+};
 
 const date = (t: number) => new Date(t * 1000).toISOString().slice(0, 16).replace('T', ' ');
 
@@ -40,6 +49,11 @@ export function Layout(props: { ctx: Ctx; title: string; children: Child }) {
           )}
         </header>
         <main>{props.children}</main>
+        {ctx.accountId && (
+          <footer class="muted">
+            Account ID: <code>{ctx.accountId}</code>
+          </footer>
+        )}
       </body>
     </html>
   );
@@ -50,7 +64,7 @@ export function Welcome(props: { ctx: Ctx }) {
     <Layout ctx={props.ctx} title="Welcome">
       <section class="card center">
         <h1>Lab services</h1>
-        <p>Sign in with your lab account to use the lab's services.</p>
+        <p>Sign in to use the lab's services, with the same account as for the lab's other tools (such as AmCAT and AnnoTinder).</p>
         <p>
           <a class="button" href="/login">
             Sign in
@@ -58,8 +72,8 @@ export function Welcome(props: { ctx: Ctx }) {
         </p>
         <p class="muted">
           {props.ctx.registrationOpen
-            ? 'No account yet? Choose "Register" on the sign-in page, then request lab membership here.'
-            : 'No account yet? Ask a lab admin.'}
+            ? 'No account yet? Create one on the sign-in page, then request lab membership here.'
+            : 'No account yet? Ask a lab admin for an invitation.'}
         </p>
       </section>
     </Layout>
@@ -92,7 +106,7 @@ export function Home(props: { ctx: Ctx; services: Service[]; hasMfa: boolean }) 
   );
 }
 
-export function NotMember(props: { ctx: Ctx; pending?: RequestRow; serviceName?: string }) {
+export function NotMember(props: { ctx: Ctx; verified: boolean; pending?: RequestRow; rejected?: RequestRow; serviceName?: string }) {
   return (
     <Layout ctx={props.ctx} title="Lab membership">
       <section class="card">
@@ -102,6 +116,13 @@ export function NotMember(props: { ctx: Ctx; pending?: RequestRow; serviceName?:
           <p>
             Your request of {date(props.pending.created_at)} is waiting for a lab admin. You'll get an email when it's
             approved.
+          </p>
+        ) : props.rejected ? (
+          <p>Your request of {date(props.rejected.created_at)} was not approved. Questions? Contact a lab admin.</p>
+        ) : !props.verified ? (
+          <p>
+            You're signed in, but not a lab member. To request membership, first verify your email address in your{' '}
+            <a href={props.ctx.accountUrl}>account</a>, then sign out and in again.
           </p>
         ) : (
           <>
@@ -155,26 +176,42 @@ export function NeedsMfa(props: { ctx: Ctx; serviceName: string; retryUrl: strin
   );
 }
 
+export const ADMIN_NOTES = ['invited', 'added', 'already-member', 'invalid'] as const;
+export type AdminNote = (typeof ADMIN_NOTES)[number];
+
+function noteText(note: AdminNote, email = ''): string {
+  return {
+    invited: `Invitation sent to ${email}: they become a member at their first sign-in with that address.`,
+    added: `${email} had already signed in with that address, and is now a member.`,
+    'already-member': `${email} is already a member.`,
+    invalid: 'Give an email address and a name.',
+  }[note];
+}
+
 export function Admin(props: {
   ctx: Ctx;
   requests: RequestRow[];
+  invitations: InvitationRow[];
   members: MemberRow[];
-  fixedMembers: string[];
-  admins: string[];
-  log: { at: number; actor: string; action: string; subject: string }[];
+  admins: (AdminEntry & { email?: string })[];
+  log: LogRow[];
   mailEnabled: boolean;
   recent: boolean;
   stepUpUrl: string;
+  note?: AdminNote;
+  noteEmail?: string;
 }) {
+  const off = !props.recent;
   return (
     <Layout ctx={props.ctx} title="Admin">
       <h1>Lab membership</h1>
-      {!props.recent && (
+      {off && (
         <div class="banner">
           Changes need a recent login with a second factor. <a href={props.stepUpUrl}>Sign in again</a> first.
         </div>
       )}
-      {!props.mailEnabled && <p class="muted">Email is not set up: new requests only show here.</p>}
+      {props.note && <div class="note">{noteText(props.note, props.noteEmail)}</div>}
+      {!props.mailEnabled && <p class="muted">Email is not set up: new requests only show here, and invitations are not sent.</p>}
 
       <h2>Requests</h2>
       {props.requests.length === 0 && <p class="muted">No pending requests.</p>}
@@ -191,10 +228,10 @@ export function Admin(props: {
             <td class="message">{r.message}</td>
             <td class="actions">
               <form method="post" action={`/admin/requests/${r.id}/approve`}>
-                <button disabled={!props.recent}>Approve</button>
+                <button disabled={off}>Approve</button>
               </form>
               <form method="post" action={`/admin/requests/${r.id}/reject`}>
-                <button class="secondary" disabled={!props.recent}>
+                <button class="secondary" disabled={off}>
                   Reject
                 </button>
               </form>
@@ -203,29 +240,61 @@ export function Admin(props: {
         ))}
       </table>
 
-      <h2>Add a member</h2>
-      <form method="post" action="/admin/members" class="inline">
+      <h2>Invite</h2>
+      <p class="muted">
+        Someone who signs in with this address (verified) becomes a member. They get an email; if they have no account yet,
+        they create one with this address.
+      </p>
+      <form method="post" action="/admin/invitations" class="inline">
         <input name="email" type="email" placeholder="Email address" required />
         <input name="name" placeholder="Name" required maxlength={200} />
-        <button disabled={!props.recent}>Add</button>
+        <button disabled={off}>Invite</button>
       </form>
+      {props.invitations.length > 0 && (
+        <table>
+          {props.invitations.map((i) => (
+            <tr>
+              <td>
+                <strong>{i.name}</strong>
+                <br />
+                {i.email}
+              </td>
+              <td class="muted">
+                Invited by {i.added_by}, {date(i.added_at)}; not signed in yet
+              </td>
+              <td class="actions">
+                <form method="post" action="/admin/invitations/remove">
+                  <input type="hidden" name="email" value={i.email} />
+                  <button class="secondary" disabled={off}>
+                    Withdraw
+                  </button>
+                </form>
+              </td>
+            </tr>
+          ))}
+        </table>
+      )}
 
       <h2>Members</h2>
+      {props.members.length === 0 && <p class="muted">No members yet.</p>}
       <table>
         {props.members.map((m) => (
           <tr>
             <td>
-              <strong>{m.name}</strong>
+              <strong>{m.name ?? m.email}</strong>
               <br />
               {m.email}
             </td>
             <td class="muted">
               Added by {m.added_by}, {date(m.added_at)}
+              <br />
+              Last sign-in {date(m.last_login)}
             </td>
             <td class="actions">
               <form method="post" action="/admin/members/remove">
-                <input type="hidden" name="email" value={m.email} />
-                <button class="secondary" disabled={!props.recent}>
+                <input type="hidden" name="iss" value={m.iss} />
+                <input type="hidden" name="sub" value={m.sub} />
+                <button class="secondary" disabled={off}>
                   Remove
                 </button>
               </form>
@@ -234,8 +303,15 @@ export function Admin(props: {
         ))}
       </table>
       <p class="muted">
-        Fixed in groups.yml (changed on the server): admins {props.admins.join(', ')}
-        {props.fixedMembers.length ? `; members ${props.fixedMembers.join(', ')}` : ''}.
+        Admins (in admins.yml on the server):{' '}
+        {props.admins.map((a, i) => (
+          <>
+            {i > 0 && ', '}
+            {a.name}
+            {a.email ? ` (${a.email})` : ' (not signed in yet)'}
+          </>
+        ))}
+        .
       </p>
 
       <h2>Log</h2>

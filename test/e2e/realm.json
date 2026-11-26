@@ -1,0 +1,231 @@
+{
+  "realm": "test",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": true,
+  "registrationEmailAsUsername": true,
+  "loginWithEmailAllowed": true,
+  "verifyEmail": false,
+  "ssoSessionIdleTimeout": 60,
+  "ssoSessionMaxLifespan": 36000,
+  "browserFlow": "browser-amr",
+  "authenticationFlows": [
+    {
+      "alias": "browser-amr",
+      "description": "cookie, or password and (when configured) OTP",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-cookie",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "flowAlias": "browser-amr-forms",
+          "authenticatorFlow": true,
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "browser-amr-forms",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-username-password-form",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "amr-pwd"
+        },
+        {
+          "flowAlias": "browser-amr-otp",
+          "authenticatorFlow": true,
+          "requirement": "CONDITIONAL",
+          "priority": 20,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "browser-amr-otp",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-user-configured",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "auth-otp-form",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "amr-otp"
+        }
+      ]
+    }
+  ],
+  "authenticatorConfig": [
+    {
+      "alias": "amr-pwd",
+      "config": {
+        "default.reference.value": "pwd",
+        "default.reference.maxAge": "1800"
+      }
+    },
+    {
+      "alias": "amr-otp",
+      "config": {
+        "default.reference.value": "mfa",
+        "default.reference.maxAge": "1800"
+      }
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "lab-portal",
+      "name": "Lab portal",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "e2e-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "frontchannelLogout": false,
+      "redirectUris": [
+        "https://lab.test/callback"
+      ],
+      "attributes": {
+        "post.logout.redirect.uris": "https://lab.test/signed-out",
+        "pkce.code.challenge.method": "S256",
+        "backchannel.logout.url": "http://127.0.0.1:3000/backchannel-logout",
+        "backchannel.logout.session.required": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "amr",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-amr-mapper",
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "admin@x.org",
+      "email": "admin@x.org",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Admin",
+      "lastName": "Test",
+      "realmRoles": [
+        "default-roles-test"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd-123",
+          "temporary": false
+        },
+        {
+          "type": "otp",
+          "userLabel": "app",
+          "secretData": "{\"value\": \"JBSWY3DPEHPK3PXP\"}",
+          "credentialData": "{\"subType\": \"totp\", \"digits\": 6, \"period\": 30, \"algorithm\": \"HmacSHA1\", \"counter\": 0}"
+        }
+      ],
+      "id": "e2e00000-0000-4000-8000-00000000ad01"
+    },
+    {
+      "username": "applicant@x.org",
+      "email": "applicant@x.org",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Applicant",
+      "lastName": "Test",
+      "realmRoles": [
+        "default-roles-test"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd-123",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "invitee@x.org",
+      "email": "invitee@x.org",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Invitee",
+      "lastName": "Test",
+      "realmRoles": [
+        "default-roles-test"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd-123",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "unverified@x.org",
+      "email": "unverified@x.org",
+      "emailVerified": false,
+      "enabled": true,
+      "firstName": "Unverified",
+      "lastName": "Test",
+      "realmRoles": [
+        "default-roles-test"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd-123",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "other@x.org",
+      "email": "other@x.org",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Other",
+      "lastName": "Test",
+      "realmRoles": [
+        "default-roles-test"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd-123",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

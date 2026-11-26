@@ -14,7 +14,7 @@ const cfg = loadConfig();
 if (cfg.insecureDisable2fa) console.warn('WARNING: AUTH_INSECURE_DISABLE_2FA is on: admin changes and services with mfa: required no longer need a second factor.');
 if (cfg.insecureDisableEmailVerification) console.warn('WARNING: AUTH_INSECURE_DISABLE_EMAIL_VERIFICATION is on: unverified email addresses are accepted.');
 
-const settings = new Settings(cfg.servicesFile, cfg.groupsFile, cfg.labDomain);
+const settings = new Settings(cfg.servicesFile, cfg.adminsFile, cfg.labDomain);
 const caddy = () => {
   if (writeCaddyfile(cfg.caddyFile, renderCaddyfile(settings.services, cfg, settings.redirects))) console.log(`Caddyfile written: ${settings.services.length} service(s), ${settings.redirects.length} redirect(s)`);
 };
@@ -34,7 +34,8 @@ for (let attempt = 1; !oidc; attempt++) {
   }
 }
 
-const mail = new Mail(cfg, db, settings);
+const issuer = oidc.issuer;
+const mail = new Mail(cfg, db, () => db.emailsOf(settings.admins.map((a) => a.sub), issuer));
 const app = new Hono();
 app.use('/static/*', serveStatic({ root: './public', rewriteRequestPath: (p) => p.replace(/^\/static/, '') }));
 app.route('/', createApp({ cfg, db, settings, oidc, mail }));

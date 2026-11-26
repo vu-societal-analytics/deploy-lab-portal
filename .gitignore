@@ -1,7 +1,7 @@
 # Local settings and data: never committed
 .env
 config/services.yml
-config/groups.yml
+config/admins.yml
 caddy/Caddyfile
 caddy/*.tmp
 data/

@@ -7,14 +7,14 @@ test('admin notifications: at most one per hour, the rest bundled; a daily remin
   const db = new Db(':memory:');
   const sent: { to: string[]; subject: string }[] = [];
   const cfg: any = { smtp: { host: 'x', port: 587, user: '', password: '', from: 'lab@x.org', security: 'none' }, labName: 'Lab', portalUrl: 'https://lab.x', accountUrl: 'https://a', reminderTime: '16:00' };
-  const settings: any = { groups: { admin: ['admin@x.org'], lab: [] } };
-  const mail = new Mail(cfg, db, settings);
+  const mail = new Mail(cfg, db, () => ['admin@x.org']);
   (mail as any).transport = { sendMail: async (m: any) => { sent.push({ to: m.to, subject: m.subject }); } };
 
-  db.addRequest('a@x.org', 'A', '');
+  const id = (sub: string, email: string) => (db.upsertUser({ iss: 'i', sub }, email, true), { iss: 'i', sub });
+  db.addRequest(id('a', 'a@x.org'), 'A', '');
   await mail.requestReceived();
   assert.equal(sent.length, 1, 'the first request: notified at once');
-  db.addRequest('b@x.org', 'B', '');
+  db.addRequest(id('b', 'b@x.org'), 'B', '');
   await mail.requestReceived();
   assert.equal(sent.length, 1, 'a second request within the hour: no new email yet');
   const hourLater = new Date(Date.now() + 3601_000);
@@ -30,4 +30,6 @@ test('admin notifications: at most one per hour, the rest bundled; a daily remin
   assert.equal(sent.length, 3, 'only once a day');
   await mail.welcome('a@x.org', 'A');
   assert.deepEqual(sent[3].to, ['a@x.org']);
+  await mail.invitation('c@x.org', 'C');
+  assert.deepEqual(sent[4], { to: ['c@x.org'], subject: 'Invitation to the Lab' });
 });

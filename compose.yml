@@ -9,7 +9,7 @@ services:
     env_file: .env
     environment:
       SERVICES_FILE: /config/services.yml
-      GROUPS_FILE: /config/groups.yml
+      ADMINS_FILE: /config/admins.yml
       CADDY_FILE: /caddy/Caddyfile
       DATABASE_FILE: /data/portal.db
       BACKUP_DIR: /backups
@@ -21,11 +21,11 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      # services.yml and groups.yml: edited on the server, only read by the portal
+      # services.yml and admins.yml: edited on the server, only read by the portal
       - ./config:/config:ro
       # The Caddyfile the portal generates from services.yml
       - ./caddy:/caddy
-      # Members, membership requests, sessions, the log of admin actions
+      # Users, members, invitations, requests, sessions, the log (SQLite)
       - ./data:/data
       # A daily copy of the database (7 kept), for the server's backup of /opt
       - ./backups:/backups
