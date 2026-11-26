@@ -8,10 +8,10 @@ import { secureHeaders } from 'hono/secure-headers';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Config } from './config.js';
 import type { Db, Id, SessionRow } from './db.js';
-import type { Settings } from './settings.js';
+import type { SessionLimits, Settings } from './settings.js';
 import type { Oidc } from './oidc.js';
 import type { Mail } from './mail.js';
-import { decide, isLabMember, safeReturnUrl, type Membership, type Person } from './authz.js';
+import { decide, isLabMember, safeReturnUrl, sessionValid, type Membership, type Person } from './authz.js';
 import * as V from './views.js';
 
 const SESSION_COOKIE = 'lab_session';
@@ -35,19 +35,22 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
   const rules = { insecureDisable2fa: cfg.insecureDisable2fa };
   const portal = (path: string) => `${cfg.portalUrl}${path}`;
 
+  const defaults = { idle: cfg.sessionIdle, max: cfg.sessionMax };
   /** The signed-in person, or null. The portal keeps its own sessions: they end after SESSION_IDLE without use,
-   *  after SESSION_MAX, on sign-out, or when the provider reports a sign-out (back-channel logout). */
-  function session(c: Context): SessionRow | null {
+   *  after SESSION_MAX, on sign-out, or when the provider reports a sign-out (back-channel logout). An app may
+   *  have its own limits (services.yml): then the session counts for that app under those limits. */
+  function session(c: Context, limits: SessionLimits = defaults): SessionRow | null {
     const token = getCookie(c, SESSION_COOKIE);
     if (!token) return null;
     const id = hash(token);
     const row = db.getSession(id);
     if (!row) return null;
     const t = now();
-    if (t - row.last_seen > cfg.sessionIdle || t - row.created_at > cfg.sessionMax) {
-      db.deleteSession(id);
+    if (!sessionValid(row, t, settings.longestSession(defaults))) {
+      db.deleteSession(id); // expired for every app
       return null;
     }
+    if (!sessionValid(row, t, limits)) return null; // expired for this app (sign in again)
     if (t - row.last_seen > 60) db.touchSession(id);
     return row;
   }
@@ -109,7 +112,7 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
     const service = settings.serviceForHost(host);
     if (!service) return c.text('Unknown service', 403);
     const original = `https://${host}${uri.startsWith('/') ? uri : '/'}`;
-    const s = session(c);
+    const s = session(c, { idle: service.sessionIdle ?? cfg.sessionIdle, max: service.sessionMax ?? cfg.sessionMax });
     const decision = decide(service, s ? person(s) : null, membership, rules);
     switch (decision.result) {
       case 'allow':
@@ -166,7 +169,7 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
       id: hash(token), ...id, sid: result.sid, email: result.email, email_verified: result.emailVerified ? 1 : 0,
       has_mfa: result.hasMfa ? 1 : 0, auth_at: result.authAt, id_token: result.idToken, created_at: t, last_seen: t,
     });
-    setCookie(c, SESSION_COOKIE, token, { domain: cfg.labDomain, path: '/', httpOnly: true, secure: true, sameSite: 'Lax', maxAge: cfg.sessionMax });
+    setCookie(c, SESSION_COOKIE, token, { domain: cfg.labDomain, path: '/', httpOnly: true, secure: true, sameSite: 'Lax', maxAge: settings.longestSession(defaults).max });
     if (login.step_up && !result.hasMfa && !cfg.insecureDisable2fa) return c.redirect(portal(`/mfa?rd=${encodeURIComponent(login.rd)}&retried=1`), 302);
     return c.redirect(login.rd, 302);
   });

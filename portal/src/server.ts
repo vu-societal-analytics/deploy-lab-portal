@@ -51,7 +51,8 @@ const backup = () => {
 };
 backup();
 setInterval(() => {
-  db.purgeSessions(cfg.sessionIdle, cfg.sessionMax);
+  const longest = settings.longestSession({ idle: cfg.sessionIdle, max: cfg.sessionMax });
+  db.purgeSessions(longest.idle, longest.max);
   backup();
 }, 3600_000).unref();
 setInterval(() => {

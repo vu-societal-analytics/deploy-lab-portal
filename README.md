@@ -71,11 +71,17 @@ scripts can use the service's own API keys. Only for services that check those k
 ### Sessions
 
 One sign-in for the whole lab zone (a cookie on `lab.<domain>`, holding a random token; the database
-only has its hash). The portal keeps its own sessions, like AmCAT and AnnoTinder: a session ends after
-12 hours without use or 7 days in total (`SESSION_IDLE`, `SESSION_MAX`), on sign-out (which also signs
-out at the provider), or when the person signs out at the provider (back-channel logout). Removing a
-member takes effect at once. To lock someone out completely, also sign them out (or disable them) in
-Keycloak.
+only has its hash). The portal keeps its own sessions, independent of Keycloak's (as the lab's
+Authentication standard prescribes):
+
+- **Limits:** 30 minutes without use, 12 hours in total (`SESSION_IDLE`, `SESSION_MAX`): OWASP's idle
+  and absolute timeouts, with NIST SP 800-63B's numbers for logins with a second factor.
+- **Per app:** an app can have its own limits in `services.yml` (`session_idle`, `session_max`), e.g.
+  a notebook server that computes for hours while the user does nothing. The session then counts for
+  that app under its limits; the portal and other apps keep the defaults. Any request counts as activity.
+- **Sign-out:** in the portal, which also signs out at Keycloak; or at Keycloak, which tells the portal
+  (back-channel logout). Removing a member takes effect at once. To lock someone out completely, also
+  sign them out (or disable them) in Keycloak.
 
 ## Setup
 

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decide, safeReturnUrl } from '../src/authz.ts';
-import { parseServices, parseAdmins, parseRedirects, type Service } from '../src/settings.ts';
+import { decide, safeReturnUrl, sessionValid } from '../src/authz.ts';
+import { parseServices, parseAdmins, parseRedirects, parseSpan, Settings, type Service } from '../src/settings.ts';
 import { renderCaddyfile } from '../src/caddy.ts';
 import { hasMfa } from '../src/oidc.ts';
 
@@ -152,4 +152,33 @@ test('an older database is refused, not silently changed', async () => {
   const file = `${mkdtempSync(`${tmpdir()}/portal-`)}/old.db`;
   new DatabaseSync(file).exec('CREATE TABLE members (email TEXT PRIMARY KEY)');
   assert.throws(() => new Db(file), /database version 0/);
+});
+
+test('session limits: the defaults, and per app', async () => {
+  assert.equal(parseSpan('30m'), 1800);
+  assert.equal(parseSpan('8h'), 28800);
+  assert.equal(parseSpan('7d'), 604800);
+  for (const bad of ['0m', '30', '1w', '-1h', '1.5h', '']) assert.equal(parseSpan(bad), undefined, bad);
+
+  const yml = 'services:\n  jupyter:\n    upstream: 127.0.0.1:8888\n    mfa: optional\n    session_idle: 8h\n    session_max: 7d\n  notes:\n    upstream: 127.0.0.1:9001\n    mfa: optional\n';
+  const [jupyter, notes] = parseServices(yml, D);
+  assert.deepEqual([jupyter.sessionIdle, jupyter.sessionMax, notes.sessionIdle], [28800, 604800, undefined]);
+  assert.throws(() => parseServices('services:\n  a:\n    upstream: 127.0.0.1:1\n    mfa: optional\n    session_idle: forever\n', D), /session_idle must be/);
+  assert.throws(() => parseServices('services:\n  a:\n    upstream: 127.0.0.1:1\n    access: public\n    session_max: 7d\n', D), /no effect/);
+
+  // A session 2 hours old, last used 1 hour ago: over the defaults (30 min idle), fine for the notebook server
+  const defaults = { idle: 1800, max: 43200 };
+  const s = { created_at: 0, last_seen: 3600 };
+  assert.equal(sessionValid(s, 7200, defaults), false);
+  assert.equal(sessionValid(s, 7200, { idle: 28800, max: 604800 }), true);
+  assert.equal(sessionValid({ created_at: 0, last_seen: 43000 }, 43300, defaults), false, 'past the maximum, however active');
+
+  // The portal keeps a session as long as the most generous app allows
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(`${tmpdir()}/portal-`);
+  writeFileSync(`${dir}/services.yml`, yml);
+  writeFileSync(`${dir}/admins.yml`, 'admins:\n  abc: Jane\n');
+  const settings = new Settings(`${dir}/services.yml`, `${dir}/admins.yml`, D);
+  assert.deepEqual(settings.longestSession(defaults), { idle: 28800, max: 604800 });
 });

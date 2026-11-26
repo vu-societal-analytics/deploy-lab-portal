@@ -254,8 +254,11 @@ setTimeout(() => {
     // ---- The portal's own session outlives the provider's (60 seconds idle in this realm)
     console.log('... waiting 70 seconds (the provider session expires)');
     await sleep(70000);
+    // First the app with its own 30-second idle limit (any visit counts as activity for all apps)
+    await other.goto('https://brief.lab.test/');
+    check("an app's own shorter limit (30 s idle): sign in again for that app", !other.url().startsWith('https://brief.lab.test'));
     await other.goto('https://notes.lab.test/');
-    check("the portal's session outlives the provider's", (await json(other)).service === 'notes');
+    check("the portal's session outlives the provider's, and the other apps keep it", (await json(other)).service === 'notes');
 
     // ---- The daily copy of the database
     check('a copy of the database is in backups/', fs.readdirSync(`${WORK}/backups`).some((f) => /^portal-\d{4}-\d{2}-\d{2}\.db$/.test(f)));

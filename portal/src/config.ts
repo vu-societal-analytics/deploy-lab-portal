@@ -45,10 +45,11 @@ export function loadConfig() {
     stepUpMaxAge: seconds('AUTH_STEP_UP_MAX_AGE', 600),
     insecureDisable2fa: flag('AUTH_INSECURE_DISABLE_2FA'),
     insecureDisableEmailVerification: flag('AUTH_INSECURE_DISABLE_EMAIL_VERIFICATION'),
-    /** The portal's own sessions: signed out after this long without use, and at most this long in total.
-     *  Signing out at the provider ends them too (back-channel logout). */
-    sessionIdle: seconds('SESSION_IDLE', 12 * 3600),
-    sessionMax: seconds('SESSION_MAX', 7 * 24 * 3600),
+    /** The portal's own sessions: signed out after this long without use, and at most this long in total
+     *  (OWASP's idle and absolute timeouts, with NIST SP 800-63B's numbers for logins with a second factor).
+     *  Apps can have their own limits in services.yml. Signing out at the provider ends them too. */
+    sessionIdle: seconds('SESSION_IDLE', 30 * 60),
+    sessionMax: seconds('SESSION_MAX', 12 * 3600),
     /** Where users manage their account and 2FA (the account console of the realm) */
     accountUrl: env('ACCOUNT_URL', `${env('OIDC_HOST').replace(/\/+$/, '')}/account`),
     /** Files */

@@ -19,3 +19,9 @@ services:
     name: Open
     upstream: 127.0.0.1:9003
     access: public
+  brief:
+    name: Brief
+    description: Signs out after 30 seconds without use (a test of per-app session limits)
+    upstream: 127.0.0.1:9003
+    mfa: optional
+    session_idle: 30s

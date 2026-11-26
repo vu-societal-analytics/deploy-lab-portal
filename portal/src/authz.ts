@@ -39,6 +39,11 @@ export function decide(service: Service, person: Person | null, m: Membership, r
   return { result: 'allow' };
 }
 
+/** Whether a session is still valid under the given limits (an app's own, or the portal's defaults). */
+export function sessionValid(s: { created_at: number; last_seen: number }, now: number, limits: { idle: number; max: number }): boolean {
+  return now - s.last_seen <= limits.idle && now - s.created_at <= limits.max;
+}
+
 /** Only addresses in the lab zone are valid places to return to after a login (no open redirect). */
 export function safeReturnUrl(raw: string | undefined, labDomain: string): string {
   const fallback = `https://${labDomain}/`;

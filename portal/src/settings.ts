@@ -6,6 +6,9 @@ import { parse } from 'yaml';
 
 export type Access = 'members' | 'admins' | 'public';
 
+/** How long a session lasts: idle (seconds without use) and max (seconds since the login) */
+export type SessionLimits = { idle: number; max: number };
+
 export type Service = {
   /** The subdomain: <id>.<lab domain> */
   id: string;
@@ -23,6 +26,10 @@ export type Service = {
   /** Optional Caddy settings */
   maxUpload?: string;
   timeout?: string;
+  /** Session limits for this app, in seconds, instead of the portal's defaults (SESSION_IDLE, SESSION_MAX):
+   *  e.g. for a notebook server that runs for hours without the user doing anything */
+  sessionIdle?: number;
+  sessionMax?: number;
   /** Listed on the portal page */
   show: boolean;
 };
@@ -39,6 +46,15 @@ const UPSTREAM = /^[a-zA-Z0-9.-]+:\d{1,5}$/;
 const PATH = /^\/[A-Za-z0-9._~\/-]*\*?$/;
 const SIZE = /^\d+(\.\d+)?(KB|MB|GB)?$/i;
 const DURATION = /^\d+(ms|s|m|h)$/;
+const SPAN = /^(\d+)(s|m|h|d)$/;
+const SPAN_SECONDS = { s: 1, m: 60, h: 3600, d: 86400 } as const;
+
+/** A time span like 30m, 8h or 7d, in seconds */
+export function parseSpan(value: unknown): number | undefined {
+  const m = SPAN.exec(String(value));
+  if (!m || Number(m[1]) <= 0) return undefined;
+  return Number(m[1]) * SPAN_SECONDS[m[2] as keyof typeof SPAN_SECONDS];
+}
 
 function fail(file: string, message: string): never {
   throw new Error(`${file}: ${message}`);
@@ -53,7 +69,7 @@ export function parseServices(text: string, labDomain: string, file = 'services.
   for (const [id, raw] of Object.entries<any>(entries)) {
     if (!SUBDOMAIN.test(id)) fail(file, `"${id}" is not a valid subdomain name`);
     if (!raw || typeof raw !== 'object') fail(file, `${id}: settings missing`);
-    const known = ['name', 'description', 'upstream', 'access', 'mfa', 'api_bypass', 'max_upload', 'timeout', 'show'];
+    const known = ['name', 'description', 'upstream', 'access', 'mfa', 'api_bypass', 'max_upload', 'timeout', 'session_idle', 'session_max', 'show'];
     for (const key of Object.keys(raw)) if (!known.includes(key)) fail(file, `${id}: unknown setting "${key}"`);
     const upstream = String(raw.upstream ?? '');
     if (!UPSTREAM.test(upstream)) fail(file, `${id}: upstream must be host:port, e.g. 127.0.0.1:9000`);
@@ -68,6 +84,13 @@ export function parseServices(text: string, labDomain: string, file = 'services.
     if (access === 'public' && apiBypass.length) fail(file, `${id}: api_bypass has no effect with access: public`);
     if (raw.max_upload !== undefined && !SIZE.test(String(raw.max_upload))) fail(file, `${id}: max_upload must be e.g. 2.5GB`);
     if (raw.timeout !== undefined && !DURATION.test(String(raw.timeout))) fail(file, `${id}: timeout must be e.g. 3000s`);
+    const span = {} as { session_idle?: number; session_max?: number };
+    for (const key of ['session_idle', 'session_max'] as const) {
+      if (raw[key] === undefined) continue;
+      if (access === 'public') fail(file, `${id}: ${key} has no effect with access: public`);
+      span[key] = parseSpan(raw[key]);
+      if (span[key] === undefined) fail(file, `${id}: ${key} must be e.g. 30m, 8h or 7d`);
+    }
     services.push({
       id,
       host: `${id}.${labDomain}`,
@@ -79,6 +102,8 @@ export function parseServices(text: string, labDomain: string, file = 'services.
       apiBypass,
       maxUpload: raw.max_upload !== undefined ? String(raw.max_upload) : undefined,
       timeout: raw.timeout !== undefined ? String(raw.timeout) : undefined,
+      sessionIdle: span.session_idle,
+      sessionMax: span.session_max,
       show: raw.show !== false,
     });
   }
@@ -167,6 +192,14 @@ export class Settings {
     } catch (error) {
       console.error(`Settings not checked: ${(error as Error).message}`);
     }
+  }
+
+  /** The most generous limits of all apps and the defaults: how long a session may be kept at all */
+  longestSession(defaults: SessionLimits): SessionLimits {
+    return {
+      idle: Math.max(defaults.idle, ...this.services.map((s) => s.sessionIdle ?? 0)),
+      max: Math.max(defaults.max, ...this.services.map((s) => s.sessionMax ?? 0)),
+    };
   }
 
   serviceForHost(host: string): Service | undefined {
