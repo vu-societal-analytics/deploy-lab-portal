@@ -122,7 +122,7 @@ On the lab server, in `/opt/lab-portal`, as the account that owns the apps (`sal
 ## Daily use
 
 - **Members**: on `https://<LAB_DOMAIN>/admin`: approve or reject requests, invite people by email
-  address, remove members.
+  address (one, or a pasted list at once, with or without invitation emails), remove members.
 - **Add or change a service**: edit `config/services.yml`. The portal checks the file; when it is
   invalid it keeps the previous settings and logs why (`docker compose logs portal`).
 - **An old address that moved** (e.g. under `lab.`): add it under `redirects:` in `services.yml`.
@@ -139,9 +139,17 @@ See `.env.example`. Besides those, for tests only: `AUTH_INSECURE_DISABLE_2FA`,
 
 ## Development and tests
 
-**Releases:** push a version tag (`git tag v0.2.0 && git push origin v0.2.0`), after changing the image
-version in `compose.yml` to match. GitHub Actions (`.github/workflows/image.yml`) runs the tests and
-publishes `ghcr.io/vu-societal-analytics/lab-portal:0.2.0`.
+**Releases:**
+
+1. Set the new version in `compose.yml` (the `image:` line, e.g. `lab-portal:0.2.0`), commit and push to `main`.
+2. On GitHub: **Releases → Draft a new release**, tag `v0.2.0` (with a `v`; created on `main`), publish.
+3. GitHub Actions (`.github/workflows/image.yml`) runs the tests and publishes
+   `ghcr.io/vu-societal-analytics/lab-portal:0.2.0` (without the `v`); if the tests fail, nothing is published.
+4. On the server: download the `compose.yml` of the new version, then `sudo docker compose pull && sudo docker compose up -d`.
+
+**Trying a change on your own computer:** `./dev/start.sh` starts Keycloak with test users, a mail
+catcher, Caddy and two test apps in Docker, and the portal from the source code, restarting on every
+change. Then open https://lab.localhost. Details and the test users: [dev/README.md](dev/README.md).
 
 ```bash
 cd portal
@@ -153,7 +161,7 @@ npm test            # unit tests: access rules, settings, Caddyfile, users and m
 Authentication standard asks of a provider, not our production realm), a mail catcher, the portal's
 Docker image and Caddy, and a browser that goes through login, requests, invitations, access per
 service, 2FA, sign-out, independence from the Keycloak session, the API bypass and settings reloads. Takes about 3 minutes;
-uses ports 80, 443, 1025, 3000, 8025 and 8080 on this machine (not on the server).
+Linux only (it uses Docker's host network), and ports 80, 443, 1025, 3000, 8025 and 8080 on this machine (not on the server).
 
 ```bash
 cd test/e2e
