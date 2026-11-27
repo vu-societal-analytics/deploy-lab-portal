@@ -25,16 +25,26 @@ const hash = (token: string) => createHash('sha256').update(token).digest('hex')
 const now = () => Math.floor(Date.now() / 1000);
 const idOf = (s: Id): Id => ({ iss: s.iss, sub: s.sub });
 
-export type Deps = { cfg: Config; db: Db; settings: Settings; oidc: Oidc; mail: Mail };
+/** The issuer of sign-ins in development mode (no OIDC provider) */
+export const DEV_ISSUER = 'dev';
 
-export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
+/** oidc is missing in development mode; issuer is the provider's (or DEV_ISSUER) */
+export type Deps = { cfg: Config; db: Db; settings: Settings; oidc?: Oidc; issuer: string; mail: Mail };
+
+export function createApp({ cfg, db, settings, oidc, issuer, mail }: Deps) {
   const app = new Hono();
   const membership: Membership = {
-    isAdmin: (p) => p.iss === oidc.issuer && settings.isAdmin(p.sub),
+    isAdmin: (p) => p.iss === issuer && settings.isAdmin(p.sub),
     isMember: (p) => db.isMember(p),
   };
   const rules = { insecureDisable2fa: cfg.insecureDisable2fa };
   const portal = (path: string) => `${cfg.portalUrl}${path}`;
+  // Development mode runs on http://localhost: cookies without Secure and without a domain
+  const secure = !cfg.devMode;
+  const cookieDomain = cfg.devMode ? undefined : cfg.labDomain;
+  /** Where to return after a login: only addresses in the lab zone (in development mode: on the portal itself) */
+  const returnUrl = (raw: string | undefined) =>
+    cfg.devMode ? (raw?.startsWith(`${cfg.portalUrl}/`) ? raw : portal('/')) : safeReturnUrl(raw, cfg.labDomain);
 
   const defaults = { idle: cfg.sessionIdle, max: cfg.sessionMax };
   /** The signed-in person, or null. The portal keeps its own sessions, independent of the provider's: they end
@@ -103,8 +113,8 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
   });
   // Pages: no framing, no inline scripts, same-origin forms only
   for (const path of ['/', '/login', '/callback', '/logout', '/signed-out', '/access', '/mfa', '/request', '/admin', '/admin/*'])
-    app.use(path, secureHeaders({ contentSecurityPolicy: { defaultSrc: ["'self'"], formAction: ["'self'", new URL(cfg.oidcHost).origin], frameAncestors: ["'none'"] } }));
-  for (const path of ['/logout', '/request', '/admin/*']) app.use(path, csrf({ origin: cfg.portalUrl }));
+    app.use(path, secureHeaders({ contentSecurityPolicy: { defaultSrc: ["'self'"], formAction: cfg.oidcHost ? ["'self'", new URL(cfg.oidcHost).origin] : ["'self'"], frameAncestors: ["'none'"] } }));
+  for (const path of ['/login', '/logout', '/request', '/admin/*']) app.use(path, csrf({ origin: cfg.portalUrl }));
 
   app.get('/health', (c) => c.text('ok'));
 
@@ -135,23 +145,25 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
 
   // ---- Login
   app.get('/login', async (c) => {
-    const rd = safeReturnUrl(c.req.query('rd') ?? portal('/'), cfg.labDomain);
+    const rd = returnUrl(c.req.query('rd') ?? portal('/'));
     const stepUp = c.req.query('step_up') === '1';
+    if (!oidc) return c.html(<V.DevLogin ctx={ctx()} rd={rd} stepUp={stepUp} />);
     const start = await oidc.start(stepUp ? 0 : undefined);
     db.insertLogin({ state: start.state, nonce: start.nonce, verifier: start.verifier, rd, step_up: stepUp ? 1 : 0, created_at: now() });
-    setCookie(c, LOGIN_COOKIE, start.state, { path: '/callback', httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 900 });
+    setCookie(c, LOGIN_COOKIE, start.state, { path: '/callback', httpOnly: true, secure, sameSite: 'Lax', maxAge: 900 });
     return c.redirect(start.url, 302);
   });
 
   app.get('/callback', async (c) => {
     const state = c.req.query('state') ?? '';
     const cookieState = getCookie(c, LOGIN_COOKIE);
-    deleteCookie(c, LOGIN_COOKIE, { path: '/callback', secure: true });
+    deleteCookie(c, LOGIN_COOKIE, { path: '/callback', secure });
     const login = state && cookieState === state ? db.takeLogin(state) : undefined;
     if (!login) return c.html(<V.Message ctx={ctx()} title="Sign-in expired"><p><a href="/login">Sign in again</a>.</p></V.Message>, 400);
     if (c.req.query('error')) {
       return c.html(<V.Message ctx={ctx()} title="Sign-in cancelled"><p><a href="/login">Sign in again</a>.</p></V.Message>, 400);
     }
+    if (!oidc) return c.redirect('/', 302);
     let result;
     try {
       const url = new URL(c.req.url);
@@ -160,6 +172,32 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
       console.error(`Login failed: ${(error as Error).message}`);
       return c.html(<V.Message ctx={ctx()} title="Sign-in failed"><p>Please <a href="/login">try again</a>.</p></V.Message>, 400);
     }
+    return signIn(c, result, login.rd, !!login.step_up);
+  });
+
+  // Development mode: sign in as anyone, without a provider (the form of GET /login)
+  app.post('/login', async (c) => {
+    if (oidc) return c.notFound();
+    const body = await c.req.parseBody();
+    const email = String(body.email ?? '').trim().toLowerCase();
+    if (!EMAIL.test(email)) return c.redirect('/login', 302);
+    const t = now();
+    const mfa = body.mfa === 'on';
+    return signIn(
+      c,
+      { iss: DEV_ISSUER, sub: email, email, emailVerified: true, hasMfa: mfa, authAt: t, idToken: '' },
+      returnUrl(String(body.rd ?? '')),
+      body.step_up === '1',
+    );
+  });
+
+  /** A new session after a login (with the provider, or in development mode) */
+  function signIn(
+    c: Context,
+    result: { iss: string; sub: string; email: string; emailVerified: boolean; hasMfa: boolean; authAt: number; idToken: string },
+    rd: string,
+    stepUp: boolean,
+  ) {
     const id = { iss: result.iss, sub: result.sub };
     db.upsertUser(id, result.email, result.emailVerified);
     joinByInvitation(id, result.email, result.emailVerified);
@@ -172,17 +210,17 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
       id: hash(token), ...id, email: result.email, email_verified: result.emailVerified ? 1 : 0,
       has_mfa: result.hasMfa ? 1 : 0, auth_at: result.authAt, step_up_at: t, id_token: result.idToken, created_at: t, last_seen: t,
     });
-    setCookie(c, SESSION_COOKIE, token, { domain: cfg.labDomain, path: '/', httpOnly: true, secure: true, sameSite: 'Lax', maxAge: settings.longestSession(defaults).max });
-    if (login.step_up && !result.hasMfa && !cfg.insecureDisable2fa) return c.redirect(portal(`/mfa?rd=${encodeURIComponent(login.rd)}&retried=1`), 302);
-    return c.redirect(login.rd, 302);
-  });
+    setCookie(c, SESSION_COOKIE, token, { domain: cookieDomain, path: '/', httpOnly: true, secure, sameSite: 'Lax', maxAge: settings.longestSession(defaults).max });
+    if (stepUp && !result.hasMfa && !cfg.insecureDisable2fa) return c.redirect(portal(`/mfa?rd=${encodeURIComponent(rd)}&retried=1`), 302);
+    return c.redirect(rd, 302);
+  }
 
   app.post('/logout', (c) => {
     const token = getCookie(c, SESSION_COOKIE);
     const row = token ? db.getSession(hash(token)) : undefined;
     if (token) db.deleteSession(hash(token));
-    deleteCookie(c, SESSION_COOKIE, { domain: cfg.labDomain, path: '/', secure: true });
-    if (!row) return c.redirect('/signed-out', 302);
+    deleteCookie(c, SESSION_COOKIE, { domain: cookieDomain, path: '/', secure });
+    if (!row || !oidc) return c.redirect('/signed-out', 302);
     return c.redirect(oidc.endSessionUrl(row.id_token, portal('/signed-out')), 302);
   });
 
@@ -224,7 +262,7 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
 
   app.get('/mfa', (c) => {
     const s = session(c);
-    const rd = safeReturnUrl(c.req.query('rd'), cfg.labDomain);
+    const rd = returnUrl(c.req.query('rd'));
     const service = settings.serviceForHost(new URL(rd).hostname);
     return c.html(<V.NeedsMfa ctx={ctx(s)} serviceName={service?.name ?? 'This service'} retryUrl={loginUrl(rd, true)} afterRetry={c.req.query('retried') === '1'} />);
   });
@@ -282,7 +320,7 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
   app.get('/admin', async (c) => {
     const s = await admin(c);
     if (s instanceof Response) return s;
-    const admins = settings.admins.map((a) => ({ ...a, email: db.getUser({ iss: oidc.issuer, sub: a.sub })?.email }));
+    const admins = settings.admins.map((a) => ({ ...a, email: db.getUser({ iss: issuer, sub: a.sub })?.email }));
     const note = V.ADMIN_NOTES.includes(c.req.query('note') as V.AdminNote) ? (c.req.query('note') as V.AdminNote) : undefined;
     return c.html(
       <V.Admin ctx={ctx(s)} requests={db.pendingRequests()} invitations={db.invitations()} members={db.members()} admins={admins}

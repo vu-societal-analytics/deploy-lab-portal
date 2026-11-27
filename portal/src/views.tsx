@@ -145,6 +145,29 @@ export function NotMember(props: { ctx: Ctx; verified: boolean; pending?: Reques
   );
 }
 
+/** Development mode (AUTH_DEV_MODE): sign in as anyone, without a password */
+export function DevLogin(props: { ctx: Ctx; rd: string; stepUp: boolean }) {
+  return (
+    <Layout ctx={props.ctx} title="Sign in (development mode)">
+      <section>
+        <p>Development mode: no OIDC provider and no password. Sign in as any email address.</p>
+        <form method="post" action="/login" class="stack">
+          <label>
+            Email address
+            <input name="email" type="email" required value="admin@example.org" />
+          </label>
+          <label>
+            <input name="mfa" type="checkbox" checked={props.stepUp} /> with a second factor
+          </label>
+          <input type="hidden" name="rd" value={props.rd} />
+          {props.stepUp && <input type="hidden" name="step_up" value="1" />}
+          <button>Sign in</button>
+        </form>
+      </section>
+    </Layout>
+  );
+}
+
 export function Message(props: { ctx: Ctx; title: string; children: Child }) {
   return (
     <Layout ctx={props.ctx} title={props.title}>

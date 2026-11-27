@@ -1,20 +1,20 @@
-# The test apps of the dev setup (see compose.yml): each answers with the headers it received from Caddy.
-# Edit freely: the portal reloads this file within seconds.
+# Example services, to see the overview and the access rules. In development mode there is no Caddy:
+# the links to the services don't open anything. Edit freely: the portal reloads this file within seconds.
 services:
   notes:
     name: Notes
     description: For lab members, with an API path for scripts
-    upstream: app-notes:8000
+    upstream: 127.0.0.1:8001
     mfa: optional
     api_bypass: [/api/*]
   secret:
     name: Secret
     description: Only with a second factor
-    upstream: app-secret:8000
+    upstream: 127.0.0.1:8002
     mfa: required
   admintool:
     name: Admin tool
     description: Only for lab admins
-    upstream: app-notes:8000
+    upstream: 127.0.0.1:8003
     access: admins
     mfa: required

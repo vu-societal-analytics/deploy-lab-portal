@@ -135,7 +135,8 @@ On the lab server, in `/opt/lab-portal`, as the account that owns the apps (`sal
 
 See `.env.example`. Besides those, for tests only: `AUTH_INSECURE_DISABLE_2FA`,
 `AUTH_INSECURE_DISABLE_EMAIL_VERIFICATION` (the lab's Authentication standard), and
-`TEST_ALLOW_HTTP_ISSUER`, `TEST_LOCAL_CERTS`.
+`TEST_ALLOW_HTTP_ISSUER`, `TEST_LOCAL_CERTS`; and for your own computer only: `AUTH_DEV_MODE`
+(see Development and tests).
 
 ## Development and tests
 
@@ -147,14 +148,14 @@ See `.env.example`. Besides those, for tests only: `AUTH_INSECURE_DISABLE_2FA`,
    `ghcr.io/vu-societal-analytics/lab-portal:0.2.0` (without the `v`); if the tests fail, nothing is published.
 4. On the server: download the `compose.yml` of the new version, then `sudo docker compose pull && sudo docker compose up -d`.
 
-**Trying a change on your own computer:** `./dev/start.sh` starts Keycloak with test users, a mail
-catcher, Caddy and two test apps in Docker, and the portal from the source code, restarting on every
-change. Then open https://lab.localhost. Details and the test users: [dev/README.md](dev/README.md).
+**Trying a change on your own computer:** `cd portal && npm ci && npm run dev`, then open
+http://localhost:3000. This is development mode (`AUTH_DEV_MODE`): no Keycloak and no Docker; you
+sign in by typing any email address, and emails are printed in the terminal. Details:
+[dev/README.md](dev/README.md).
 
 ```bash
 cd portal
-npm ci
-npm test            # unit tests: access rules, settings, Caddyfile, users and members, email, backups
+npm test            # unit tests: access rules, settings, Caddyfile, users and members, email, backups, development mode
 ```
 
 **End-to-end test** (`test/e2e`): Keycloak with a minimal realm (`realm.json`: only what the
@@ -173,7 +174,7 @@ Files in `portal/src`:
 
 | file          | what                                                                     |
 |---------------|--------------------------------------------------------------------------|
-| `server.ts`   | start: settings, Caddyfile, database, OIDC, timers                       |
+| `server.ts`   | start: settings, Caddyfile, database, OIDC (none in development mode), timers |
 | `app.tsx`     | the routes: login, callback, forward auth, sign-out, membership, admin   |
 | `authz.ts`    | the access decision per service, and safe return addresses               |
 | `oidc.ts`     | OIDC login (PKCE, state, nonce), sign-out                                |

@@ -8,14 +8,18 @@ import { Settings } from './settings.js';
 import { Oidc } from './oidc.js';
 import { Mail } from './mail.js';
 import { renderCaddyfile, writeCaddyfile } from './caddy.js';
-import { createApp } from './app.js';
+import { createApp, DEV_ISSUER } from './app.js';
 
 const cfg = loadConfig();
 if (cfg.insecureDisable2fa) console.warn('WARNING: AUTH_INSECURE_DISABLE_2FA is on: admin changes and services with mfa: required no longer need a second factor.');
 if (cfg.insecureDisableEmailVerification) console.warn('WARNING: AUTH_INSECURE_DISABLE_EMAIL_VERIFICATION is on: unverified email addresses are accepted.');
 
+if (cfg.devMode) console.warn('DEVELOPMENT MODE (AUTH_DEV_MODE): no OIDC provider, anyone can sign in as anyone. Only on this computer.');
+
 const settings = new Settings(cfg.servicesFile, cfg.adminsFile, cfg.labDomain);
+// In development mode there is no Caddy: no Caddyfile
 const caddy = () => {
+  if (cfg.devMode) return;
   if (writeCaddyfile(cfg.caddyFile, renderCaddyfile(settings.services, cfg, settings.redirects))) console.log(`Caddyfile written: ${settings.services.length} service(s), ${settings.redirects.length} redirect(s)`);
 };
 caddy();
@@ -25,7 +29,7 @@ const db = new Db(cfg.databaseFile);
 
 // The provider may not be reachable yet (e.g. both start at the same time): keep trying
 let oidc: Oidc | undefined;
-for (let attempt = 1; !oidc; attempt++) {
+for (let attempt = 1; !oidc && !cfg.devMode; attempt++) {
   try {
     oidc = await Oidc.create(cfg);
   } catch (error) {
@@ -34,11 +38,11 @@ for (let attempt = 1; !oidc; attempt++) {
   }
 }
 
-const issuer = oidc.issuer;
+const issuer = oidc?.issuer ?? DEV_ISSUER;
 const mail = new Mail(cfg, db, () => db.emailsOf(settings.admins.map((a) => a.sub), issuer));
 const app = new Hono();
 app.use('/static/*', serveStatic({ root: './public', rewriteRequestPath: (p) => p.replace(/^\/static/, '') }));
-app.route('/', createApp({ cfg, db, settings, oidc, mail }));
+app.route('/', createApp({ cfg, db, settings, oidc, issuer, mail }));
 
 const backup = () => {
   if (!cfg.backupDir) return;

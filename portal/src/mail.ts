@@ -24,10 +24,14 @@ export class Mail {
   }
 
   get enabled() {
-    return !!this.transport;
+    return !!this.transport || this.cfg.devMode;
   }
 
   private async send(to: string[], subject: string, text: string) {
+    if (!this.transport && this.cfg.devMode) {
+      console.log(`\n---- Email (development mode: not sent) to ${to.join(', ') || '(no admin address known yet)'}\n${subject}\n\n${text}----\n`);
+      return;
+    }
     if (!this.transport || !to.length) return;
     try {
       await this.transport.sendMail({ from: this.cfg.smtp!.from, to, subject, text });

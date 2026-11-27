@@ -27,19 +27,30 @@ function mfaClaim(): MfaClaim {
   return { claim, value };
 }
 
+/** Addresses that only this computer can reach: the only ones allowed in development mode */
+const LOCAL = ['127.0.0.1', 'localhost', '::1'];
+
 export function loadConfig() {
-  const labDomain = env('LAB_DOMAIN').toLowerCase().replace(/^\.+|\.+$/g, '');
+  /** Development mode (the lab's Authentication standard): no OIDC provider, sign in as any test user.
+   *  Only on this computer: the portal refuses to start unless it listens on localhost. */
+  const devMode = flag('AUTH_DEV_MODE');
+  const listenHost = env('PORTAL_LISTEN_HOST', devMode ? '127.0.0.1' : '0.0.0.0');
+  const listenPort = Number(env('PORTAL_PORT', '3000'));
+  if (devMode && !LOCAL.includes(listenHost))
+    throw new Error(`AUTH_DEV_MODE is only allowed when the portal listens on localhost (PORTAL_LISTEN_HOST=127.0.0.1), not on ${listenHost}`);
+  const labDomain = env('LAB_DOMAIN', devMode ? 'localhost' : undefined).toLowerCase().replace(/^\.+|\.+$/g, '');
   const config = {
+    devMode,
     /** The lab zone: the portal at https://<labDomain>, the services at https://<name>.<labDomain> */
     labDomain,
-    portalUrl: `https://${labDomain}`,
+    portalUrl: devMode ? `http://localhost:${listenPort}` : `https://${labDomain}`,
     /** Where the portal listens (Caddy proxies to it) */
-    listenHost: env('PORTAL_LISTEN_HOST', '0.0.0.0'),
-    listenPort: Number(env('PORTAL_PORT', '3000')),
-    /** The OIDC provider (the realm of Keycloak that AmCAT and AnnoTinder use too) */
-    oidcHost: env('OIDC_HOST'),
-    oidcClientId: env('OIDC_CLIENT_ID'),
-    oidcClientSecret: env('OIDC_CLIENT_SECRET'),
+    listenHost,
+    listenPort,
+    /** The OIDC provider (the realm of Keycloak that AmCAT and AnnoTinder use too); not used in development mode */
+    oidcHost: devMode ? '' : env('OIDC_HOST'),
+    oidcClientId: devMode ? '' : env('OIDC_CLIENT_ID'),
+    oidcClientSecret: devMode ? '' : env('OIDC_CLIENT_SECRET'),
     mfaClaim: mfaClaim(),
     /** Sensitive actions (the admin page): a login with a second factor at most AUTH_STEP_UP_MAX_AGE ago,
      *  and at most AUTH_STEP_UP_IDLE since the last sensitive action (each one renews it, like GitHub's sudo mode) */
@@ -53,7 +64,7 @@ export function loadConfig() {
     sessionIdle: seconds('AUTH_SESSION_IDLE', 30 * 60),
     sessionMax: seconds('AUTH_SESSION_MAX', 24 * 3600),
     /** Where users manage their account and 2FA (the account console of the realm) */
-    accountUrl: env('ACCOUNT_URL', `${env('OIDC_HOST').replace(/\/+$/, '')}/account`),
+    accountUrl: env('ACCOUNT_URL', devMode ? `http://localhost:${listenPort}/` : `${env('OIDC_HOST').replace(/\/+$/, '')}/account`),
     /** Files */
     servicesFile: env('SERVICES_FILE', '/config/services.yml'),
     adminsFile: env('ADMINS_FILE', '/config/admins.yml'),
