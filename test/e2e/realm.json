@@ -224,6 +224,24 @@
           "temporary": false
         }
       ]
+    },
+    {
+      "username": "batch@x.org",
+      "email": "batch@x.org",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Batch",
+      "lastName": "Test",
+      "realmRoles": [
+        "default-roles-test"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Passw0rd-123",
+          "temporary": false
+        }
+      ]
     }
   ]
 }

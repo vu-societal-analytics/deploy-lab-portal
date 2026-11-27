@@ -137,3 +137,10 @@ table.log td { font-size: 0.85rem; padding: 0.35rem 0.75rem; }
 }
 footer { max-width: 860px; margin: 0 auto; padding: 0 1rem 2rem; font-size: 0.8rem; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.95em; user-select: all; }
+
+details.batch { margin: 0.75rem 0 1rem; }
+details.batch summary { cursor: pointer; color: var(--sal-blue); }
+details.batch form { margin-top: 0.75rem; }
+label.check { display: flex; gap: 0.5rem; align-items: flex-start; }
+label.check input { width: auto; margin-top: 0.3rem; }
+.note ul { margin: 0.5rem 0 0; }

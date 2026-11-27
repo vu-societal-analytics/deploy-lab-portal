@@ -13,6 +13,7 @@ import type { Oidc } from './oidc.js';
 import type { Mail } from './mail.js';
 import { decide, isLabMember, safeReturnUrl, sessionValid, stepUpValid, type Membership, type Person } from './authz.js';
 import * as V from './views.js';
+import { MAX_INVITEES, parseInviteeList } from './batch.js';
 
 const SESSION_COOKIE = 'lab_session';
 const LOGIN_COOKIE = 'lab_login';
@@ -270,6 +271,14 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
   const done = (c: Context, note: V.AdminNote, email = '') =>
     c.redirect(`/admin?note=${note}${email ? `&email=${encodeURIComponent(email)}` : ''}`, 302);
 
+  /** The summary of a batch invitation, from the redirect after it */
+  const batchResult = (c: Context): V.BatchResult | undefined => {
+    if (c.req.query('note') !== 'batch') return undefined;
+    const [invited, added, already, invalid] = (c.req.query('counts') ?? '').split(',').map((n) => Number(n) || 0);
+    const lines = (c.req.query('invalid') ?? '').split('\n').filter(Boolean);
+    return { invited, added, already, invalid, invalidLines: lines };
+  };
+
   app.get('/admin', async (c) => {
     const s = await admin(c);
     if (s instanceof Response) return s;
@@ -278,7 +287,7 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
     return c.html(
       <V.Admin ctx={ctx(s)} requests={db.pendingRequests()} invitations={db.invitations()} members={db.members()} admins={admins}
         log={db.recentLog()} mailEnabled={mail.enabled} recent={recentStepUp(s)} stepUpUrl={loginUrl(portal('/admin'), true)}
-        note={note} noteEmail={c.req.query('email')} />,
+        note={note} noteEmail={c.req.query('email')} batch={batchResult(c)} />,
     );
   });
 
@@ -303,17 +312,10 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
     return c.redirect('/admin', 302);
   });
 
-  // Inviting someone by email address: someone who already signed in with that verified address becomes a member
-  // now; otherwise the invitation waits for their first sign-in.
-  app.post('/admin/invitations', async (c) => {
-    const s = await adminChange(c);
-    if (s instanceof Response) return s;
-    const body = await c.req.parseBody();
-    const email = String(body.email ?? '').trim().toLowerCase();
-    const name = String(body.name ?? '').trim().slice(0, 200);
-    if (!EMAIL.test(email) || !name) return done(c, 'invalid');
-    if (db.memberByEmail(email)) return done(c, 'already-member', email);
-    const by = adminName(s);
+  /** Invites one person by email address: someone who already signed in with that verified address becomes a
+   *  member now; otherwise the invitation waits for their first sign-in. Emails only when sendEmail. */
+  async function invite(email: string, name: string, by: string, sendEmail: boolean): Promise<'invited' | 'added' | 'already-member'> {
+    if (db.memberByEmail(email)) return 'already-member';
     const user = db.userByVerifiedEmail(email);
     if (user) {
       db.transaction(() => {
@@ -322,13 +324,42 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
         db.settleRequestsOf(idOf(user), by);
         db.log(by, 'added', email);
       });
-      await mail.welcome(email, name);
-      return done(c, 'added', email);
+      if (sendEmail) await mail.welcome(email, name);
+      return 'added';
     }
     db.addInvitation(email, name, by);
     db.log(by, 'invited', email);
-    await mail.invitation(email, name);
-    return done(c, 'invited', email);
+    if (sendEmail) await mail.invitation(email, name);
+    return 'invited';
+  }
+
+  app.post('/admin/invitations', async (c) => {
+    const s = await adminChange(c);
+    if (s instanceof Response) return s;
+    const body = await c.req.parseBody();
+    const email = String(body.email ?? '').trim().toLowerCase();
+    const name = String(body.name ?? '').trim().slice(0, 200);
+    if (!EMAIL.test(email) || !name) return done(c, 'invalid');
+    return done(c, await invite(email, name, adminName(s), true), email);
+  });
+
+  // Many at once: a pasted list, one per line ("email" or "email, name"); emails to them only when asked
+  app.post('/admin/invitations/batch', async (c) => {
+    const s = await adminChange(c);
+    if (s instanceof Response) return s;
+    const body = await c.req.parseBody();
+    const { invitees, invalid } = parseInviteeList(String(body.list ?? ''));
+    if (invitees.length > MAX_INVITEES) return done(c, 'invalid');
+    const sendEmail = body.send_email === 'on';
+    const by = adminName(s);
+    const counts = { invited: 0, added: 0, 'already-member': 0 };
+    for (const p of invitees) counts[await invite(p.email, p.name, by, sendEmail)]++;
+    const q = new URLSearchParams({
+      note: 'batch',
+      counts: [counts.invited, counts.added, counts['already-member'], invalid.length].join(','),
+      invalid: invalid.slice(0, 10).join('\n'),
+    });
+    return c.redirect(`/admin?${q}`, 302);
   });
 
   app.post('/admin/invitations/remove', async (c) => {

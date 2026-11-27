@@ -207,6 +207,21 @@ setTimeout(() => {
     await other.goto(`${PORTAL}/`);
     check('... and they see the services', (await other.locator('h1').innerText()) === 'Lab services');
 
+    // ---- Inviting several people at once (without emails)
+    await admin.goto(`${PORTAL}/admin`);
+    await admin.click('details.batch summary');
+    await admin.fill('form[action="/admin/invitations/batch"] textarea', 'batch@x.org, Bea Batch\nnot an address\nother@x.org\nBatch@x.org');
+    await admin.click('form[action="/admin/invitations/batch"] button');
+    const summary = await admin.locator('.note').innerText();
+    check('a list: invited, already members and invalid lines counted (duplicates once)',
+      summary.includes('Invited: 1') && summary.includes('Already members: 1') && summary.includes('not an email address: 1') && summary.includes('not an address'), summary);
+    await sleep(1500);
+    check('... without emails, unless asked', (await mails('batch@x.org')).length === 0);
+    const batchUser = await person();
+    await batchUser.goto(`${PORTAL}/login`);
+    await keycloakLogin(batchUser, 'batch@x.org');
+    check('... and the invited person is a member at their first sign-in', (await batchUser.locator('h1').innerText()) === 'Lab services');
+
     // ---- Requests from other sites, the API bypass, forged headers
     check('a form post from another site is refused (CSRF)', (await curl(`${PORTAL}/admin/invitations`, ['-X', 'POST', '-H', 'Origin: https://evil.test', '-d', 'email=x@x.org&name=X'])).status === 403);
     const api = await curl('https://notes.lab.test/api/items', ['-H', 'Authorization: Bearer the-services-own-key', '-H', 'X-Auth-Request-Email: forged@x.org']);

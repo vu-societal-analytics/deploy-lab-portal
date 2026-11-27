@@ -193,3 +193,17 @@ test('sensitive actions: a 2FA login, renewed by each sensitive action (sudo mod
   assert.equal(stepUpValid({ ...login, has_mfa: 0 }, 60, limits), false, 'a login without a second factor');
   assert.equal(stepUpValid({ ...login, has_mfa: 0 }, 60, limits, true), true, 'unless 2FA is disabled for testing');
 });
+
+test('a pasted list of people to invite', async () => {
+  const { parseInviteeList } = await import('../src/batch.ts');
+  const { invitees, invalid } = parseInviteeList(
+    'jane@example.org, Jane  Doe\r\n\nJOHN@example.org\n<ann@example.org>; Ann\tSmith\nnot an address\njane@example.org, Duplicate\nbob@example.org\tBob\n',
+  );
+  assert.deepEqual(invitees, [
+    { email: 'jane@example.org', name: 'Jane Doe' },
+    { email: 'john@example.org', name: 'john' },
+    { email: 'ann@example.org', name: 'Ann Smith' },
+    { email: 'bob@example.org', name: 'Bob' },
+  ]);
+  assert.deepEqual(invalid, ['not an address']);
+});

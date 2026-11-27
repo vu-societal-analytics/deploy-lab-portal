@@ -176,15 +176,19 @@ export function NeedsMfa(props: { ctx: Ctx; serviceName: string; retryUrl: strin
   );
 }
 
-export const ADMIN_NOTES = ['invited', 'added', 'already-member', 'invalid'] as const;
+export const ADMIN_NOTES = ['invited', 'added', 'already-member', 'invalid', 'batch'] as const;
 export type AdminNote = (typeof ADMIN_NOTES)[number];
+
+/** The result of a batch invitation */
+export type BatchResult = { invited: number; added: number; already: number; invalid: number; invalidLines: string[] };
 
 function noteText(note: AdminNote, email = ''): string {
   return {
     invited: `Invitation sent to ${email}: they become a member at their first sign-in with that address.`,
     added: `${email} had already signed in with that address, and is now a member.`,
     'already-member': `${email} is already a member.`,
-    invalid: 'Give an email address and a name.',
+    invalid: 'Give an email address and a name (a list: at most 1000 lines).',
+    batch: '',
   }[note];
 }
 
@@ -200,6 +204,7 @@ export function Admin(props: {
   stepUpUrl: string;
   note?: AdminNote;
   noteEmail?: string;
+  batch?: BatchResult;
 }) {
   const off = !props.recent;
   return (
@@ -210,7 +215,22 @@ export function Admin(props: {
           Changes need a recent login with a second factor. <a href={props.stepUpUrl}>Sign in again</a> first.
         </div>
       )}
-      {props.note && <div class="note">{noteText(props.note, props.noteEmail)}</div>}
+      {props.note && props.note !== 'batch' && <div class="note">{noteText(props.note, props.noteEmail)}</div>}
+      {props.batch && (
+        <div class="note">
+          Invited: {props.batch.invited} (members at their first sign-in). Members at once (they had already signed in):{' '}
+          {props.batch.added}. Already members: {props.batch.already}. Lines that are not an email address: {props.batch.invalid}
+          {props.batch.invalidLines.length > 0 && (
+            <ul>
+              {props.batch.invalidLines.map((l) => (
+                <li>
+                  <code>{l}</code>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       {!props.mailEnabled && <p class="muted">Email is not set up: new requests only show here, and invitations are not sent.</p>}
 
       <h2>Requests</h2>
@@ -250,6 +270,20 @@ export function Admin(props: {
         <input name="name" placeholder="Name" required maxlength={200} />
         <button disabled={off}>Invite</button>
       </form>
+      <details class="batch">
+        <summary>Invite several people at once</summary>
+        <form method="post" action="/admin/invitations/batch" class="stack">
+          <label>
+            One per line: an email address, optionally followed by a comma and a name
+            <textarea name="list" rows={6} placeholder={'jane@example.org, Jane Doe\njohn@example.org'}></textarea>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="send_email" /> Send each of them an email (an invitation, or a welcome for those who
+            become members at once)
+          </label>
+          <button disabled={off}>Invite</button>
+        </form>
+      </details>
       {props.invitations.length > 0 && (
         <table>
           {props.invitations.map((i) => (
