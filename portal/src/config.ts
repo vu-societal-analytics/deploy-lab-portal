@@ -41,15 +41,17 @@ export function loadConfig() {
     oidcClientId: env('OIDC_CLIENT_ID'),
     oidcClientSecret: env('OIDC_CLIENT_SECRET'),
     mfaClaim: mfaClaim(),
-    /** Sensitive actions (the admin page) need a 2FA login at most this old */
-    stepUpMaxAge: seconds('AUTH_STEP_UP_MAX_AGE', 600),
+    /** Sensitive actions (the admin page): a login with a second factor at most AUTH_STEP_UP_MAX_AGE ago,
+     *  and at most AUTH_STEP_UP_IDLE since the last sensitive action (each one renews it, like GitHub's sudo mode) */
+    stepUpMaxAge: seconds('AUTH_STEP_UP_MAX_AGE', 3600),
+    stepUpIdle: seconds('AUTH_STEP_UP_IDLE', 15 * 60),
     insecureDisable2fa: flag('AUTH_INSECURE_DISABLE_2FA'),
     insecureDisableEmailVerification: flag('AUTH_INSECURE_DISABLE_EMAIL_VERIFICATION'),
     /** The portal's own sessions: signed out after this long without use, and at most this long in total
-     *  (OWASP's idle and absolute timeouts, with NIST SP 800-63B's numbers for logins with a second factor).
+     *  (OWASP's idle and absolute timeouts, within NIST SP 800-63B-4's limits for logins with a second factor).
      *  Apps can have their own limits in services.yml. Independent of the provider's session. */
-    sessionIdle: seconds('SESSION_IDLE', 30 * 60),
-    sessionMax: seconds('SESSION_MAX', 12 * 3600),
+    sessionIdle: seconds('AUTH_SESSION_IDLE', 30 * 60),
+    sessionMax: seconds('AUTH_SESSION_MAX', 24 * 3600),
     /** Where users manage their account and 2FA (the account console of the realm) */
     accountUrl: env('ACCOUNT_URL', `${env('OIDC_HOST').replace(/\/+$/, '')}/account`),
     /** Files */

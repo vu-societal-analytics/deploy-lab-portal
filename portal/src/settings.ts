@@ -26,7 +26,7 @@ export type Service = {
   /** Optional Caddy settings */
   maxUpload?: string;
   timeout?: string;
-  /** Session limits for this app, in seconds, instead of the portal's defaults (SESSION_IDLE, SESSION_MAX):
+  /** Session limits for this app, in seconds, instead of the portal's defaults (AUTH_SESSION_IDLE, AUTH_SESSION_MAX):
    *  e.g. for a notebook server that runs for hours without the user doing anything */
   sessionIdle?: number;
   sessionMax?: number;

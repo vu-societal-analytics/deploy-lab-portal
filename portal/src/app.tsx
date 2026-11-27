@@ -11,7 +11,7 @@ import type { Db, Id, SessionRow } from './db.js';
 import type { SessionLimits, Settings } from './settings.js';
 import type { Oidc } from './oidc.js';
 import type { Mail } from './mail.js';
-import { decide, isLabMember, safeReturnUrl, sessionValid, type Membership, type Person } from './authz.js';
+import { decide, isLabMember, safeReturnUrl, sessionValid, stepUpValid, type Membership, type Person } from './authz.js';
 import * as V from './views.js';
 
 const SESSION_COOKIE = 'lab_session';
@@ -37,7 +37,7 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
 
   const defaults = { idle: cfg.sessionIdle, max: cfg.sessionMax };
   /** The signed-in person, or null. The portal keeps its own sessions, independent of the provider's: they end
-   *  after SESSION_IDLE without use, after SESSION_MAX, or on sign-out here. An app may have its own limits
+   *  after AUTH_SESSION_IDLE without use, after AUTH_SESSION_MAX, or on sign-out here. An app may have its own limits
    *  (services.yml): then the session counts for that app under those limits. */
   function session(c: Context, limits: SessionLimits = defaults): SessionRow | null {
     const token = getCookie(c, SESSION_COOKIE);
@@ -70,8 +70,10 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
     accountId: s?.sub,
     isAdmin: s ? isAdmin(s) : false,
   });
-  /** Admin changes need a 2FA login of at most AUTH_STEP_UP_MAX_AGE seconds ago (with insecure 2FA: a recent login). */
-  const recentStepUp = (s: SessionRow) => (cfg.insecureDisable2fa || !!s.has_mfa) && now() - s.auth_at <= cfg.stepUpMaxAge;
+  /** Admin changes: a 2FA login of at most AUTH_STEP_UP_MAX_AGE ago, and at most AUTH_STEP_UP_IDLE since the
+   *  login or the last admin change (each change renews it). */
+  const recentStepUp = (s: SessionRow) =>
+    stepUpValid(s, now(), { idle: cfg.stepUpIdle, max: cfg.stepUpMaxAge }, cfg.insecureDisable2fa);
   const loginUrl = (rd: string, stepUp = false) => portal(`/login?rd=${encodeURIComponent(rd)}${stepUp ? '&step_up=1' : ''}`);
 
   /** At sign-in: someone invited by email becomes a member when the provider verified that address. */
@@ -167,7 +169,7 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
     const t = now();
     db.insertSession({
       id: hash(token), ...id, email: result.email, email_verified: result.emailVerified ? 1 : 0,
-      has_mfa: result.hasMfa ? 1 : 0, auth_at: result.authAt, id_token: result.idToken, created_at: t, last_seen: t,
+      has_mfa: result.hasMfa ? 1 : 0, auth_at: result.authAt, step_up_at: t, id_token: result.idToken, created_at: t, last_seen: t,
     });
     setCookie(c, SESSION_COOKIE, token, { domain: cfg.labDomain, path: '/', httpOnly: true, secure: true, sameSite: 'Lax', maxAge: settings.longestSession(defaults).max });
     if (login.step_up && !result.hasMfa && !cfg.insecureDisable2fa) return c.redirect(portal(`/mfa?rd=${encodeURIComponent(login.rd)}&retried=1`), 302);
@@ -262,6 +264,7 @@ export function createApp({ cfg, db, settings, oidc, mail }: Deps) {
     const s = await admin(c);
     if (s instanceof Response) return s;
     if (!recentStepUp(s)) return c.redirect(loginUrl(portal('/admin'), true), 302);
+    db.touchStepUp(s.id);
     return s;
   }
   const done = (c: Context, note: V.AdminNote, email = '') =>

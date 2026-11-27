@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decide, safeReturnUrl, sessionValid } from '../src/authz.ts';
+import { decide, safeReturnUrl, sessionValid, stepUpValid } from '../src/authz.ts';
 import { parseServices, parseAdmins, parseRedirects, parseSpan, Settings, type Service } from '../src/settings.ts';
 import { renderCaddyfile } from '../src/caddy.ts';
 import { hasMfa } from '../src/oidc.ts';
@@ -95,7 +95,7 @@ test('daily database copy: consistent, without sessions, 7 kept', async () => {
   const a = { iss: ISS, sub: 'a' };
   db.upsertUser(a, 'a@x.org', true);
   db.addMember(a, 'Admin');
-  db.insertSession({ id: 'h', ...a, email: 'a@x.org', email_verified: 1, has_mfa: 0, auth_at: 0, id_token: 't', created_at: 0, last_seen: 0 });
+  db.insertSession({ id: 'h', ...a, email: 'a@x.org', email_verified: 1, has_mfa: 0, auth_at: 0, step_up_at: 0, id_token: 't', created_at: 0, last_seen: 0 });
   for (let d = 1; d <= 9; d++) db.backup(`${dir}/backups`, 7, new Date(Date.UTC(2026, 0, d)));
   assert.equal(db.backup(`${dir}/backups`, 7, new Date(Date.UTC(2026, 0, 9))), null, 'once a day');
   const files = readdirSync(`${dir}/backups`).sort();
@@ -181,4 +181,15 @@ test('session limits: the defaults, and per app', async () => {
   writeFileSync(`${dir}/admins.yml`, 'admins:\n  abc: Jane\n');
   const settings = new Settings(`${dir}/services.yml`, `${dir}/admins.yml`, D);
   assert.deepEqual(settings.longestSession(defaults), { idle: 28800, max: 604800 });
+});
+
+test('sensitive actions: a 2FA login, renewed by each sensitive action (sudo mode)', () => {
+  const limits = { idle: 900, max: 3600 };
+  const login = { has_mfa: 1, auth_at: 0, step_up_at: 0 };
+  assert.equal(stepUpValid(login, 600, limits), true, '10 minutes after the login');
+  assert.equal(stepUpValid(login, 1000, limits), false, 'more than 15 minutes without a sensitive action');
+  assert.equal(stepUpValid({ ...login, step_up_at: 2400 }, 3000, limits), true, 'renewed by an action 10 minutes ago');
+  assert.equal(stepUpValid({ ...login, step_up_at: 3500 }, 3700, limits), false, 'more than an hour after the login, however active');
+  assert.equal(stepUpValid({ ...login, has_mfa: 0 }, 60, limits), false, 'a login without a second factor');
+  assert.equal(stepUpValid({ ...login, has_mfa: 0 }, 60, limits, true), true, 'unless 2FA is disabled for testing');
 });

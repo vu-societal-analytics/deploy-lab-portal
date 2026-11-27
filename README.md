@@ -62,8 +62,9 @@ AnnoTinder. The email address is stored too (updated at every sign-in), for emai
 
 Every `members` or `admins` service sets `mfa`: `required` (only with a login with a second factor: the
 `amr` claim contains `mfa`) or `optional`. The portal asks everyone without a second factor to add one.
-Admin changes always need a login with a second factor from the last 10 minutes
-(`AUTH_STEP_UP_MAX_AGE`); the admin page asks to sign in again otherwise.
+Admin changes always need a login with a second factor: at most an hour ago (`AUTH_STEP_UP_MAX_AGE`),
+and at most 15 minutes since that login or the last admin change (`AUTH_STEP_UP_IDLE`; each change
+renews it, like GitHub's "sudo mode"). Otherwise the admin page asks to sign in again.
 
 `api_bypass` lists paths where requests **with an `Authorization` header** skip the lab login, so
 scripts can use the service's own API keys. Only for services that check those keys themselves.
@@ -74,8 +75,8 @@ One sign-in for the whole lab zone (a cookie on `lab.<domain>`, holding a random
 only has its hash). The portal keeps its own sessions, independent of Keycloak's (as the lab's
 Authentication standard prescribes):
 
-- **Limits:** 30 minutes without use, 12 hours in total (`SESSION_IDLE`, `SESSION_MAX`): OWASP's idle
-  and absolute timeouts, with NIST SP 800-63B's numbers for logins with a second factor.
+- **Limits:** 30 minutes without use, 24 hours in total (`AUTH_SESSION_IDLE`, `AUTH_SESSION_MAX`):
+  OWASP's idle and absolute timeouts, within NIST SP 800-63B-4's limits for logins with a second factor.
 - **Per app:** an app can have its own limits in `services.yml` (`session_idle`, `session_max`), e.g.
   a notebook server that computes for hours while the user does nothing. The session then counts for
   that app under its limits; the portal and other apps keep the defaults. Any request counts as activity.

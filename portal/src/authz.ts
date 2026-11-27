@@ -44,6 +44,17 @@ export function sessionValid(s: { created_at: number; last_seen: number }, now: 
   return now - s.last_seen <= limits.idle && now - s.created_at <= limits.max;
 }
 
+/** Whether sensitive actions are allowed now: a login with a second factor (unless 2FA is disabled for testing)
+ *  of at most limits.max ago, and at most limits.idle since the login or the last sensitive action. */
+export function stepUpValid(
+  s: { has_mfa: number; auth_at: number; step_up_at: number },
+  now: number,
+  limits: { idle: number; max: number },
+  insecureDisable2fa = false,
+): boolean {
+  return (insecureDisable2fa || !!s.has_mfa) && now - s.auth_at <= limits.max && now - s.step_up_at <= limits.idle;
+}
+
 /** Only addresses in the lab zone are valid places to return to after a login (no open redirect). */
 export function safeReturnUrl(raw: string | undefined, labDomain: string): string {
   const fallback = `https://${labDomain}/`;

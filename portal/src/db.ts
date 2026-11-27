@@ -36,6 +36,8 @@ export type SessionRow = Id & {
   email_verified: number;
   has_mfa: number;
   auth_at: number;
+  /** The start of the window for sensitive actions: the login, or the last sensitive action */
+  step_up_at: number;
   id_token: string;
   created_at: number;
   last_seen: number;
@@ -76,7 +78,7 @@ export class Db {
         FOREIGN KEY (iss, sub) REFERENCES users (iss, sub));
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY, iss TEXT NOT NULL, sub TEXT NOT NULL, email TEXT NOT NULL,
-        email_verified INTEGER NOT NULL, has_mfa INTEGER NOT NULL, auth_at INTEGER NOT NULL, id_token TEXT NOT NULL,
+        email_verified INTEGER NOT NULL, has_mfa INTEGER NOT NULL, auth_at INTEGER NOT NULL, step_up_at INTEGER NOT NULL, id_token TEXT NOT NULL,
         created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS sessions_sub ON sessions (iss, sub);
       CREATE TABLE IF NOT EXISTS logins (
@@ -206,14 +208,18 @@ export class Db {
   // ---- Sessions
   insertSession(s: SessionRow) {
     this.db
-      .prepare(`INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?)`)
-      .run(s.id, s.iss, s.sub, s.email, s.email_verified, s.has_mfa, s.auth_at, s.id_token, s.created_at, s.last_seen);
+      .prepare(`INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(s.id, s.iss, s.sub, s.email, s.email_verified, s.has_mfa, s.auth_at, s.step_up_at, s.id_token, s.created_at, s.last_seen);
   }
   getSession(id: string): SessionRow | undefined {
     return this.db.prepare(`SELECT * FROM sessions WHERE id = ?`).get(id) as SessionRow | undefined;
   }
   touchSession(id: string) {
     this.db.prepare(`UPDATE sessions SET last_seen = ? WHERE id = ?`).run(now(), id);
+  }
+  /** A sensitive action: renews the window for the next ones */
+  touchStepUp(id: string) {
+    this.db.prepare(`UPDATE sessions SET step_up_at = ? WHERE id = ?`).run(now(), id);
   }
   deleteSession(id: string) {
     this.db.prepare(`DELETE FROM sessions WHERE id = ?`).run(id);
